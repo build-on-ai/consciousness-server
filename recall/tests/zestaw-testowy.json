@@ -1,0 +1,64 @@
+{
+ "opis": "Zestaw testowy modulu recall. Zapytania sa CELOWO OGOLNE - opisuja klasy problemow, nie konkretne wdrozenie. Nie wstawiac tu nazw hostow, agentow, firm ani dat incydentow: plik jest publiczny, a zestaw testowy z realiami instalacji opisuje ta instalacje.",
+ "kryterium": "PULAPKA musi zwrocic 0 wynikow. TRAFNE musi zwrocic wyniki i to na temat.",
+ "trafne": [
+  {
+   "q": "dlaczego notatki znikaja po 30 dniach",
+   "oczekiwane": "TTL, retencja, wygasanie"
+  },
+  {
+   "q": "gdzie trafia kopia zapasowa danych",
+   "oczekiwane": "backup, kopia"
+  },
+  {
+   "q": "jak dziala wektoryzacja notatek",
+   "oczekiwane": "embedding, kolekcja, wyszukiwanie semantyczne"
+  },
+  {
+   "q": "ktore porty zajmuja serwisy",
+   "oczekiwane": "porty, rejestr portow"
+  },
+  {
+   "q": "co robi agent backendowy",
+   "oczekiwane": "agent, API, role"
+  },
+  {
+   "q": "problem z siecia i polaczeniem do hosta",
+   "oczekiwane": "siec, polaczenie, tunel"
+  },
+  {
+   "q": "jak wyglada rejestr agentow",
+   "oczekiwane": "heartbeat, status, rejestracja"
+  },
+  {
+   "q": "co sie stalo z telemetria maszyn",
+   "oczekiwane": "telemetria, monitoring, cisza strumienia"
+  }
+ ],
+ "pulapki": [
+  {
+   "q": "przepis na ciasto drozdzowe"
+  },
+  {
+   "q": "jaka bedzie pogoda w weekend"
+  },
+  {
+   "q": "kto wygral mistrzostwa swiata w pilce noznej"
+  },
+  {
+   "q": "jak uprawiac pomidory w szklarni"
+  },
+  {
+   "q": "najlepsze trasy rowerowe w Bieszczadach"
+  },
+  {
+   "q": "objawy niedoboru witaminy D"
+  },
+  {
+   "q": "how to bake sourdough bread"
+  },
+  {
+   "q": "what time is the next train to Berlin"
+  }
+ ]
+}

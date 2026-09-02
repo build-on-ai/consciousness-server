@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+set -u
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+AGENT="${CS_AGENT_ID:-TUI}"
+PULA=()
+for k in "$ROOT"/deploy/keys/*; do
+  [ -f "$k" ] || continue
+  case "$(basename "$k")" in *.pub) continue ;; esac
+  PULA+=("$(basename "$k")")
+done
+[ ${#PULA[@]} -eq 0 ] && PULA=("$AGENT")
+LICZNIK=0
+NA_TOZSAMOSC=40
+biezacy_agent() {
+  local i=$(( LICZNIK / NA_TOZSAMOSC % ${#PULA[@]} ))
+  echo "${PULA[$i]}"
+}
+FORMAT="${1:-table}"
+
+PORT="$("$ROOT/lib/ports.py" consciousness-server 2>/dev/null)" || PORT=3032
+BASE="http://127.0.0.1:${PORT}"
+
+ok=0; zle=0; pominiete=0
+declare -a BLEDY=()
+
+wolaj() {
+  curl -s -o /dev/null -w '%{http_code}' -m 8 -X "$1" "$2" "${@:3}" 2>/dev/null
+}
+
+wolaj_podpisane() {
+  local metoda="$1" sciezka="$2" proba=0 kod
+  while [ $proba -lt 3 ]; do
+    local kto; kto="$(biezacy_agent)"
+    LICZNIK=$((LICZNIK+1))
+    local hdrs
+    hdrs="$("$HERE/sign-request" "$kto" "$metoda" "$sciezka" 2>/dev/null)" || { echo "000"; return; }
+    local args=()
+    while IFS= read -r l; do [ -n "$l" ] && args+=(-H "$l"); done <<< "$hdrs"
+    kod="$(curl -s -o /dev/null -w '%{http_code}' -m 8 -X "$metoda" "${args[@]}" "${BASE}${sciezka}" 2>/dev/null)"
+    [ "$kod" = "429" ] || { echo "$kod"; return; }
+    LICZNIK=$(( (LICZNIK / NA_TOZSAMOSC + 1) * NA_TOZSAMOSC ))
+    proba=$((proba+1))
+  done
+  echo "$kod"
+}
+
+konkret() {
+  echo "$1" | sed \
+    -e 's|:agent_id|TUI|g' -e 's|:agent|TUI|g' -e 's|:name|TUI|g' \
+    -e 's|:message_id|00000000-0000-0000-0000-000000000000|g' \
+    -e 's|:id|00000000-0000-0000-0000-000000000000|g' \
+    -e 's|:task_id|00000000-0000-0000-0000-000000000000|g' \
+    -e 's|:note_id|00000000-0000-0000-0000-000000000000|g' \
+    -e 's|:[a-z_]*|test|g'
+}
+
+TRASY="$(wolaj_podpisane GET /api/_routes >/dev/null; \
+  hdrs="$("$HERE/sign-request" "$AGENT" GET /api/_routes 2>/dev/null)"; \
+  args=(); while IFS= read -r l; do [ -n "$l" ] && args+=(-H "$l"); done <<< "$hdrs"; \
+  curl -s -m 8 "${args[@]}" "${BASE}/api/_routes" 2>/dev/null)"
+
+if [ -z "$TRASY" ] || ! echo "$TRASY" | grep -q '"routes"'; then
+  echo "test-endpoints: nie udalo sie pobrac listy tras z ${BASE}/api/_routes" >&2
+  echo "  odpowiedz: ${TRASY:0:200}" >&2
+  echo "  czy stack dziala (docker compose ps)? czy key-server odpowiada?" >&2
+  echo "  czy bin/bootstrap-keys byl uruchomiony?" >&2
+  exit 2
+fi
+
+LISTA="$(echo "$TRASY" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+for r in d["routes"]:
+    for m in r["methods"]:
+        print(m + chr(9) + r["path"] + chr(9) + str(r["parameterised"]))
+')"
+
+CALK=$(echo "$LISTA" | grep -c .)
+[ "$FORMAT" = "table" ] && {
+  printf '\n  %-7s %-46s %-12s %-12s %s\n' METODA SCIEZKA BEZ-PODPISU Z-PODPISEM WYNIK
+  printf '  %s\n' "$(printf '%.0s-' {1..96})"
+}
+
+while IFS=$'\t' read -r metoda sciezka param; do
+  [ -z "$metoda" ] && continue
+  konkretna="$(konkret "$sciezka")"
+
+  bez="$(wolaj "$metoda" "${BASE}${konkretna}")"
+
+  if [ "$metoda" = "GET" ]; then
+    z="$(wolaj_podpisane "$metoda" "$konkretna")"
+  else
+    z="-"
+  fi
+
+  wynik="OK"
+  if [ "$bez" = "000" ]; then wynik="BRAK ODPOWIEDZI"; fi
+  case "$bez" in 5*) wynik="5xx BEZ PODPISU" ;; esac
+  if [ "$metoda" = "GET" ]; then
+    case "$z" in
+      401) wynik="401 MIMO PODPISU" ;;
+      429) wynik="LIMIT - NIE SPRAWDZONO" ;;
+      5*)  wynik="5xx Z PODPISEM" ;;
+      000) wynik="BRAK ODPOWIEDZI" ;;
+    esac
+  fi
+
+  if [ "$wynik" = "OK" ]; then ok=$((ok+1)); else zle=$((zle+1)); BLEDY+=("$metoda $sciezka -> bez:$bez z:$z ($wynik)"); fi
+
+  [ "$FORMAT" = "table" ] && printf '  %-7s %-46s %-12s %-12s %s\n' "$metoda" "${sciezka:0:46}" "$bez" "$z" "$wynik"
+done <<< "$LISTA"
+
+# Blocks with their own port do not publish /api/_routes, so their paths are named here.
+BLOKI=(
+  "test-runner|GET /health|GET /api/test/history|GET /api/test/00000000-0000-0000-0000-000000000000|POST /api/test/run"
+  "git-workflow|GET /health|GET /api/git/history|POST /api/git/hook/post-commit"
+)
+
+for wpis in "${BLOKI[@]}"; do
+  IFS='|' read -r blok reszta <<< "$wpis"
+  bport="$("$ROOT/lib/ports.py" "$blok" 2>/dev/null)" || continue
+  bbase="http://127.0.0.1:${bport}"
+  [ "$FORMAT" = "table" ] && printf '\n  %s (port %s)\n' "$blok" "$bport"
+  IFS='|' read -ra trasy <<< "$wpis"
+  for t in "${trasy[@]:1}"; do
+    metoda="${t%% *}"; sciezka="${t#* }"
+    CALK=$((CALK+1))
+    bez="$(wolaj "$metoda" "${bbase}${sciezka}")"
+    if [ "$metoda" = "GET" ] && [ "$sciezka" != "/health" ]; then
+      kto="$(biezacy_agent)"; LICZNIK=$((LICZNIK+1))
+      hdrs="$("$HERE/sign-request" "$kto" "$metoda" "$sciezka" 2>/dev/null)"
+      args=(); while IFS= read -r l; do [ -n "$l" ] && args+=(-H "$l"); done <<< "$hdrs"
+      z="$(curl -s -o /dev/null -w '%{http_code}' -m 8 -X "$metoda" "${args[@]}" "${bbase}${sciezka}" 2>/dev/null)"
+    else
+      z="-"
+    fi
+
+    wynik="OK"
+    if [ "$sciezka" = "/health" ]; then
+      [ "$bez" = "200" ] || wynik="HEALTH NIE ODPOWIADA"
+    else
+      case "$bez" in 401) ;; 000) wynik="BRAK ODPOWIEDZI" ;; *) wynik="BRAK BRAMKI PODPISU" ;; esac
+    fi
+    case "$z" in 401) wynik="401 MIMO PODPISU" ;; 5*) wynik="5xx Z PODPISEM" ;; 000) wynik="BRAK ODPOWIEDZI" ;; esac
+
+    if [ "$wynik" = "OK" ]; then ok=$((ok+1)); else zle=$((zle+1)); BLEDY+=("$blok $metoda $sciezka -> bez:$bez z:$z ($wynik)"); fi
+    [ "$FORMAT" = "table" ] && printf '  %-7s %-46s %-12s %-12s %s\n' "$metoda" "${sciezka:0:46}" "$bez" "$z" "$wynik"
+  done
+done
+
+echo
+echo "  tras sprawdzonych: $CALK    OK: $ok    do obejrzenia: $zle"
+if [ "$CALK" -eq 0 ] || [ "$ok" -eq 0 ]; then
+  echo
+  echo "  BLAD: nie sprawdzono ani jednej trasy - to nie jest wynik pozytywny." >&2
+  exit 2
+fi
+if [ ${#BLEDY[@]} -gt 0 ]; then
+  echo
+  echo "  Do obejrzenia:"
+  for b in "${BLEDY[@]}"; do echo "    $b"; done
+fi
+[ "$zle" -eq 0 ]

@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+
+set -u
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CS_URL="${CS_URL:-http://127.0.0.1:$("$REPO_ROOT/lib/ports.py" consciousness-server 3032)}"
+
+AGENT="${BOA_AGENT:-${CS_AGENT_ID:-}}"
+if [ "${1-}" = "--as" ]; then AGENT="${2-}"; shift 2; fi
+
+MSG="${1-}"
+[ -n "$MSG" ] || { echo "użycie: bin/say [--as ROLA] \"@KTOŚ treść\"" >&2; exit 2; }
+
+if [ -z "$AGENT" ]; then
+  echo "say: nie wiem, kim jesteś — podaj --as ROLA albo ustaw BOA_AGENT" >&2
+  exit 2
+fi
+
+case "$MSG" in
+  *@*) ;;
+  *) echo "say: uwaga — wiadomość bez @wzmianki nie dotrze do nikogo" >&2 ;;
+esac
+
+BODY="$(python3 -c 'import json,sys; print(json.dumps({"from":sys.argv[1],"content":sys.argv[2]}))' "$AGENT" "$MSG")"
+
+HDRS="$(AGENT_PRIV_KEY="${AGENT_PRIV_KEY:-$REPO_ROOT/deploy/keys/$AGENT}" \
+  "$REPO_ROOT/bin/sign-request" "$AGENT" POST /api/chat "$BODY" 2>/dev/null)" || {
+  echo "say: nie mogę podpisać jako $AGENT — czy istnieje deploy/keys/$AGENT?" >&2
+  exit 1
+}
+
+ARGS=(); while IFS= read -r line; do ARGS+=(-H "$line"); done <<< "$HDRS"
+
+RESP="$(curl -s --max-time 6 -X POST "$CS_URL/api/chat" \
+  -H "Content-Type: application/json" "${ARGS[@]}" -d "$BODY")"
+
+python3 -c '
+import json,sys
+try: d=json.loads(sys.argv[1])
+except Exception: print("say: rdzeń odpowiedział czymś, czego nie rozumiem:", sys.argv[1][:120]); sys.exit(1)
+if d.get("error"): print("say: odrzucone —", d.get("reason") or d["error"]); sys.exit(1)
+m=d.get("mentions") or []
+print("wysłane, powiadomieni:", ", ".join(m) if m else "NIKT (brak @wzmianki)")
+' "$RESP"

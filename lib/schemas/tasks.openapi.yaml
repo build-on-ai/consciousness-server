@@ -1,0 +1,416 @@
+openapi: 3.0.3
+info:
+  title: Consciousness Server Tasks API
+  version: 0.3.0-draft
+  description: Draft contract for the task endpoints used by BuildOnAI agents.
+servers:
+  - url: /api
+    description: Same-origin
+tags:
+  - name: tasks
+    description: Agent task queue operations
+paths:
+  /tasks:
+    get:
+      tags: [tasks]
+      operationId: listTasks
+      summary: List tasks
+      description: Results ordered by created_at DESC, ties broken by id.
+      parameters:
+        - name: assigned_to
+          in: query
+          schema:
+            type: string
+            minLength: 1
+          description: Return only tasks assigned to this agent.
+          example: REVIEWER
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/TaskStatus'
+          description: Return only tasks in this status.
+          example: PENDING
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+          description: Maximum number of tasks to return.
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Number of matching tasks to skip before returning results.
+        - name: created_after
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Return tasks created strictly after this timestamp.
+          example: '2026-05-09T23:24:57.451Z'
+      responses:
+        '200':
+          description: Matching tasks and pagination metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [total, pagination, tasks]
+                properties:
+                  total:
+                    type: integer
+                    minimum: 0
+                    description: Total number of tasks matching the filters.
+                  pagination:
+                    $ref: './_common.openapi.yaml#/components/schemas/Pagination'
+                  tasks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+    post:
+      tags: [tasks]
+      operationId: createTask
+      summary: Create task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskCreate'
+      responses:
+        '201':
+          description: Task created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /tasks/{id}:
+    get:
+      tags: [tasks]
+      operationId: getTask
+      summary: Get task by ID
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: Task details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /tasks/{id}/status:
+    patch:
+      tags: [tasks]
+      operationId: patchTaskStatus
+      summary: Update task status
+      description: The only mutation core exposes on a task today — status and an optional free-text result, nothing else. There was a broader PATCH /tasks/{id} here (assigned_to/priority/metadata/deadline/artifacts_path via TaskPatch) that core never implemented; removed rather than left describing a contract with no router behind it. Reassignment (assigned_to) is a known gap — moving a task between agents currently happens outside the API, and is tracked separately rather than folded into this endpoint.
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              additionalProperties: false
+              properties:
+                status:
+                  $ref: '#/components/schemas/TaskStatus'
+                result:
+                  type: string
+                  description: Stored on the task when status is DONE or FAILED; ignored otherwise.
+      responses:
+        '200':
+          description: Status updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, task_id, status, previous_status]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+                  task_id:
+                    type: string
+                    format: uuid
+                  status:
+                    $ref: '#/components/schemas/TaskStatus'
+                  previous_status:
+                    $ref: '#/components/schemas/TaskStatus'
+        '400':
+          description: Missing or invalid status.
+          content:
+            application/json:
+              schema:
+                $ref: './_common.openapi.yaml#/components/schemas/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /tasks/available:
+    get:
+      tags: [tasks]
+      operationId: listAvailableTasks
+      summary: List unclaimed pull-style tasks
+      description: status=PENDING and assigned_to=null, sorted by priority then created_at ascending. Any agent can claim one via POST /tasks/{id}/claim. Unlike GET /tasks, this returns a plain array — no total/pagination wrapper.
+      responses:
+        '200':
+          description: Unclaimed tasks.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Task'
+  /tasks/pending/{agent}:
+    get:
+      tags: [tasks]
+      operationId: listPendingTasksForAgent
+      summary: List an agent's pending push-style tasks
+      description: status=PENDING and assigned_to matches the path agent exactly (case-sensitive), sorted by priority then created_at ascending. Returns a plain array, like GET /tasks/available — not the total/pagination wrapper GET /tasks uses.
+      parameters:
+        - name: agent
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+          example: BUILDER
+      responses:
+        '200':
+          description: Matching pending tasks.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Task'
+  /tasks/{id}/claim:
+    post:
+      tags: [tasks]
+      operationId: claimTask
+      summary: Claim an unclaimed pull-style task
+      description: Only works while assigned_to is null and status is PENDING — the first caller wins, a second gets 409.
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent]
+              additionalProperties: false
+              properties:
+                agent:
+                  type: string
+                  minLength: 1
+      responses:
+        '200':
+          description: Task claimed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [task_id, agent, claimed_at]
+                properties:
+                  task_id:
+                    type: string
+                    format: uuid
+                  agent:
+                    type: string
+                  claimed_at:
+                    type: string
+                    format: date-time
+        '400':
+          description: Missing required field agent.
+          content:
+            application/json:
+              schema:
+                $ref: './_common.openapi.yaml#/components/schemas/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Already claimed, or not in PENDING status.
+          content:
+            application/json:
+              schema:
+                $ref: './_common.openapi.yaml#/components/schemas/ErrorResponse'
+  /tasks/create:
+    post:
+      tags: [tasks]
+      operationId: createTaskAlias
+      summary: Create task (alias of POST /tasks)
+      description: Same handler as POST /tasks, kept for backward compatibility. Identical request and response — see createTask.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskCreate'
+      responses:
+        '201':
+          description: Task created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+components:
+  parameters:
+    TaskId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Task identifier.
+  responses:
+    BadRequest:
+      description: Request validation failed.
+      content:
+        application/json:
+          schema:
+            $ref: './_common.openapi.yaml#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Task was not found.
+      content:
+        application/json:
+          schema:
+            $ref: './_common.openapi.yaml#/components/schemas/ErrorResponse'
+    RateLimited:
+      description: Task creation rate limit was exceeded.
+      content:
+        application/json:
+          schema:
+            $ref: './_common.openapi.yaml#/components/schemas/ErrorResponse'
+  schemas:
+    TaskStatus:
+      type: string
+      enum:
+        - PENDING
+        - IN_PROGRESS
+        - DONE
+        - FAILED
+        - CANCELLED
+    TaskPriority:
+      type: string
+      enum:
+        - URGENT
+        - HIGH
+        - NORMAL
+        - LOW
+    Task:
+      type: object
+      required:
+        - id
+        - project
+        - assigned_to
+        - created_by
+        - title
+        - description
+        - priority
+        - status
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        project:
+          type: string
+        assigned_to:
+          type: string
+        created_by:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        priority:
+          $ref: '#/components/schemas/TaskPriority'
+        metadata:
+          type: object
+          nullable: true
+          additionalProperties: true
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        created_at:
+          type: string
+          format: date-time
+        deadline:
+          type: string
+          format: date-time
+          nullable: true
+          description: Target completion deadline. Optional; absence means no explicit due-by.
+        claimed_at:
+          type: string
+          format: date-time
+          nullable: true
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        result:
+          type: string
+          nullable: true
+        artifacts_path:
+          type: string
+          nullable: true
+          description: Filesystem path to task artifacts or outputs (e.g. logs, generated files). Optional.
+    TaskCreate:
+      type: object
+      required:
+        - project
+        - assigned_to
+        - created_by
+        - title
+      additionalProperties: false
+      properties:
+        project:
+          type: string
+        assigned_to:
+          type: string
+        created_by:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+          default: ''
+        priority:
+          allOf:
+            - $ref: '#/components/schemas/TaskPriority'
+          default: NORMAL
+        metadata:
+          type: object
+          nullable: true
+          additionalProperties: true
+        deadline:
+          type: string
+          format: date-time
+          nullable: true
+          description: Target completion deadline. Optional; absence means no explicit due-by.
+        artifacts_path:
+          type: string
+          nullable: true
+          description: Filesystem path to task artifacts or outputs (e.g. logs, generated files). Optional.

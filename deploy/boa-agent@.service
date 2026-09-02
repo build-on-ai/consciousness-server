@@ -1,0 +1,26 @@
+[Unit]
+Description=BoA agent %i
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=notify
+NotifyAccess=main
+
+ExecStart=/bin/sh -c 'exec "${BOA_HOME:?set it with: systemctl --user set-environment BOA_HOME=/path/to/checkout}/tui/bin/boa-runner" --role %i ${BOA_CORE:+--core "$BOA_CORE"}'
+
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStartSec=30
+TimeoutStopSec=15
+WatchdogSec=45
+Restart=on-failure
+SuccessExitStatus=0 SIGTERM
+RestartSec=2
+StandardOutput=append:%h/.local/state/boa/agent-%i.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target

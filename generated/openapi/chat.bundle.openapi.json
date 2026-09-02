@@ -1,0 +1,649 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Consciousness Server Chat API",
+    "version": "0.1.0-draft",
+    "description": "This contract covers ONLY the realtime chat store served by core /api/chat. The historical 'conversations' collection lives in semantic-search :3037 and is intentionally NOT exposed via REST. Use POST :3037/api/search with collection='conversations' for historical retrieval. Health metric 'conversations' will be renamed to 'conversation_embeddings' in.",
+    "x-sync-schema-bundled": true,
+    "x-sync-schema-source": "lib/schemas/chat.openapi.yaml"
+  },
+  "servers": [
+    {
+      "url": "/api",
+      "description": "Same-origin"
+    }
+  ],
+  "tags": [
+    {
+      "name": "chat",
+      "description": "Realtime agent chat messages"
+    }
+  ],
+  "paths": {
+    "/chat": {
+      "get": {
+        "tags": [
+          "chat"
+        ],
+        "operationId": "listChatMessages",
+        "summary": "List chat messages",
+        "description": "Results ordered by timestamp DESC, ties broken by id. Target order is NOT YET ENFORCED by core.",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Return only messages sent by this agent. NOT YET ENFORCED by core.",
+            "example": "observer"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Return only messages addressed to this agent. NOT YET ENFORCED by core.",
+            "example": "REVIEWER"
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "Return messages strictly after this timestamp.",
+            "example": "2026-05-10T00:00:00Z"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            },
+            "description": "Maximum number of messages to return."
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "description": "Number of matching messages to skip before returning results. NOT YET ENFORCED by core."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Matching chat messages and pagination metadata.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "total",
+                    "pagination",
+                    "messages"
+                  ],
+                  "properties": {
+                    "total": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Total number of messages matching the filters."
+                    },
+                    "pagination": {
+                      "type": "object",
+                      "required": [
+                        "limit",
+                        "offset",
+                        "returned"
+                      ],
+                      "properties": {
+                        "limit": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "offset": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "returned": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "next_offset": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "nullable": true
+                        }
+                      }
+                    },
+                    "messages": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "from",
+                          "content",
+                          "mentions",
+                          "timestamp"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "from": {
+                            "type": "string"
+                          },
+                          "to": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "Target recipient for direct messages. NOT YET PERSISTED by core."
+                          },
+                          "type": {
+                            "allOf": [
+                              {
+                                "type": "string",
+                                "description": "Target client-side message classification. Core currently accepts arbitrary type strings and does not persist this field; NOT YET ENFORCED by core.",
+                                "enum": [
+                                  "message",
+                                  "task",
+                                  "broadcast"
+                                ]
+                              }
+                            ],
+                            "nullable": true,
+                            "description": "Target message type. NOT YET PERSISTED by core."
+                          },
+                          "content": {
+                            "type": "string"
+                          },
+                          "mentions": {
+                            "type": "array",
+                            "description": "Mentioned agents. Currently uses prefix-match parser; longest-match fix tracked in.",
+                            "items": {
+                              "type": "string"
+                            },
+                            "example": [
+                              "REVIEWER"
+                            ]
+                          },
+                          "timestamp": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "nullable": true
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "chat"
+        ],
+        "operationId": "createChatMessage",
+        "summary": "Create chat message",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "from",
+                  "content"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "from": {
+                    "type": "string"
+                  },
+                  "to": {
+                    "type": "string",
+                    "nullable": true,
+                    "description": "Target recipient for direct messages. Accepted but NOT YET PERSISTED by core."
+                  },
+                  "content": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "allOf": [
+                      {
+                        "type": "string",
+                        "description": "Target client-side message classification. Core currently accepts arbitrary type strings and does not persist this field; NOT YET ENFORCED by core.",
+                        "enum": [
+                          "message",
+                          "task",
+                          "broadcast"
+                        ]
+                      }
+                    ],
+                    "default": "message",
+                    "description": "Accepted but NOT YET ENFORCED or persisted by core."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Chat message accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message_id",
+                    "timestamp",
+                    "mentions"
+                  ],
+                  "properties": {
+                    "message_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "mentions": {
+                      "type": "array",
+                      "description": "Mentioned agents. Currently uses prefix-match parser; longest-match fix tracked in.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "example": [
+                        "REVIEWER"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "nullable": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Chat rate limit was exceeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "nullable": true
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/chat/mentions/{agent}": {
+      "get": {
+        "tags": [
+          "chat"
+        ],
+        "operationId": "listChatMentions",
+        "summary": "List chat messages mentioning an agent",
+        "description": "Messages whose mentions include this agent (matched uppercased) or ALL, most recent last, capped by limit. No pagination wrapper, unlike GET /chat.",
+        "parameters": [
+          {
+            "name": "agent",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Agent name; matched uppercased against each message's mentions.",
+            "example": "builder"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 20
+            },
+            "description": "Maximum number of messages to return (most recent)."
+          },
+          {
+            "name": "unread",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "description": "Accepted but NOT YET ENFORCED by core — has no effect on the result."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Messages mentioning this agent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "agent",
+                    "messages",
+                    "total"
+                  ],
+                  "properties": {
+                    "agent": {
+                      "type": "string",
+                      "description": "The path agent value, uppercased."
+                    },
+                    "messages": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "from",
+                          "content",
+                          "mentions",
+                          "timestamp"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "from": {
+                            "type": "string"
+                          },
+                          "to": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "Target recipient for direct messages. NOT YET PERSISTED by core."
+                          },
+                          "type": {
+                            "allOf": [
+                              {
+                                "type": "string",
+                                "description": "Target client-side message classification. Core currently accepts arbitrary type strings and does not persist this field; NOT YET ENFORCED by core.",
+                                "enum": [
+                                  "message",
+                                  "task",
+                                  "broadcast"
+                                ]
+                              }
+                            ],
+                            "nullable": true,
+                            "description": "Target message type. NOT YET PERSISTED by core."
+                          },
+                          "content": {
+                            "type": "string"
+                          },
+                          "mentions": {
+                            "type": "array",
+                            "description": "Mentioned agents. Currently uses prefix-match parser; longest-match fix tracked in.",
+                            "items": {
+                              "type": "string"
+                            },
+                            "example": [
+                              "REVIEWER"
+                            ]
+                          },
+                          "timestamp": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        }
+                      }
+                    },
+                    "total": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "BadRequest": {
+        "description": "Request validation failed.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "error"
+              ],
+              "properties": {
+                "error": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "details": {
+                  "nullable": true
+                }
+              }
+            }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "Chat rate limit was exceeded.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "error"
+              ],
+              "properties": {
+                "error": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "details": {
+                  "nullable": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "ChatMessageType": {
+        "type": "string",
+        "description": "Target client-side message classification. Core currently accepts arbitrary type strings and does not persist this field; NOT YET ENFORCED by core.",
+        "enum": [
+          "message",
+          "task",
+          "broadcast"
+        ]
+      },
+      "ChatMentions": {
+        "type": "array",
+        "description": "Mentioned agents. Currently uses prefix-match parser; longest-match fix tracked in.",
+        "items": {
+          "type": "string"
+        },
+        "example": [
+          "REVIEWER"
+        ]
+      },
+      "ChatMessage": {
+        "type": "object",
+        "required": [
+          "id",
+          "from",
+          "content",
+          "mentions",
+          "timestamp"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string",
+            "nullable": true,
+            "description": "Target recipient for direct messages. NOT YET PERSISTED by core."
+          },
+          "type": {
+            "allOf": [
+              {
+                "type": "string",
+                "description": "Target client-side message classification. Core currently accepts arbitrary type strings and does not persist this field; NOT YET ENFORCED by core.",
+                "enum": [
+                  "message",
+                  "task",
+                  "broadcast"
+                ]
+              }
+            ],
+            "nullable": true,
+            "description": "Target message type. NOT YET PERSISTED by core."
+          },
+          "content": {
+            "type": "string"
+          },
+          "mentions": {
+            "type": "array",
+            "description": "Mentioned agents. Currently uses prefix-match parser; longest-match fix tracked in.",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "REVIEWER"
+            ]
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ChatCreate": {
+        "type": "object",
+        "required": [
+          "from",
+          "content"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string",
+            "nullable": true,
+            "description": "Target recipient for direct messages. Accepted but NOT YET PERSISTED by core."
+          },
+          "content": {
+            "type": "string"
+          },
+          "type": {
+            "allOf": [
+              {
+                "type": "string",
+                "description": "Target client-side message classification. Core currently accepts arbitrary type strings and does not persist this field; NOT YET ENFORCED by core.",
+                "enum": [
+                  "message",
+                  "task",
+                  "broadcast"
+                ]
+              }
+            ],
+            "default": "message",
+            "description": "Accepted but NOT YET ENFORCED or persisted by core."
+          }
+        }
+      }
+    }
+  }
+}

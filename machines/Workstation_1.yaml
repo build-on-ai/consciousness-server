@@ -1,0 +1,11 @@
+name: workstation-1
+ip: 192.0.2.50
+os: Debian 12
+roles:
+  - docker-host
+  - gpu-inference
+specs:
+  cpu: Ryzen 9 7900
+  ram_gb: 16
+  gpu: RTX 4070
+contact: operator@example.com

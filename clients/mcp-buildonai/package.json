@@ -1,0 +1,25 @@
+{
+  "name": "buildonai-mcp",
+  "version": "1.0.0",
+  "description": "BuildOnAI MCP Server - 90% context savings",
+  "type": "module",
+  "bin": {
+    "buildonai-mcp": "./mcp-server.ts"
+  },
+  "scripts": {
+    "start": "npx tsx mcp-server.ts",
+    "agents": "npx tsx servers/consciousness/getAgents.ts",
+    "notes": "npx tsx servers/consciousness/getNotes.ts",
+    "chat": "npx tsx servers/consciousness/sendChat.ts",
+    "search": "npx tsx servers/semantic/search.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "sshpk": "^1.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0"
+  }
+}

@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+
+set -u
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+KEYS_PRIV="$REPO_ROOT/deploy/keys"
+KEYS_PUB="$REPO_ROOT/key-server/keys/agents"
+AGENTS_DIR="$REPO_ROOT/agents"
+PORTS_YAML="$REPO_ROOT/ports.yaml"
+
+GRN=$'\033[0;32m'; YEL=$'\033[0;33m'; RED=$'\033[0;31m'; RST=$'\033[0m'
+
+MODE="mint"
+case "${1-}" in
+  "")           MODE="mint" ;;
+  --check)      MODE="check" ;;
+  --register)   MODE="register" ;;
+  *) printf 'bootstrap-keys: unknown argument: %s\n' "$1" >&2; exit 2 ;;
+esac
+
+
+roles() {
+  find "$AGENTS_DIR" -maxdepth 1 -name '*.md' ! -name 'README.md' -printf '%f\n' 2>/dev/null \
+    | sed 's/\.md$//' | tr '[:lower:]' '[:upper:]' | sort
+}
+
+blocks() {
+  awk '/^active_blocks:/{f=1;next} f&&/^  - /{print $2} f&&!/^  - /&&NF{exit}' "$PORTS_YAML"
+  echo "cs-core"
+}
+
+clients() { printf 'TUI\nstatus-collector\n'; }
+
+all_identities() { { roles; blocks; clients; } | awk 'NF' | sort -u; }
+
+
+mint_one() {
+  local id="$1" priv="$KEYS_PRIV/$1" pub="$KEYS_PUB/$1.pub"
+
+  if [ -f "$pub" ]; then
+    if [ -f "$priv" ]; then
+      local have want
+      have="$(ssh-keygen -yf "$priv" 2>/dev/null | ssh-keygen -lf - 2>/dev/null | awk '{print $2}')"
+      want="$(ssh-keygen -lf "$pub" 2>/dev/null | awk '{print $2}')"
+      if [ -n "$have" ] && [ -n "$want" ] && [ "$have" != "$want" ]; then
+        printf '  %sFAIL%s    %-22s klucz prywatny i publiczny to RÓŻNE klucze\n' \
+          "$RED" "$RST" "$id"
+        printf '          prywatny %s\n          publiczny %s\n' "$have" "$want"
+        printf '          napraw ręcznie: usuń jeden z nich i uruchom ponownie\n'
+        return 1
+      fi
+    fi
+    printf '  %sok%s      %-22s already registered\n' "$GRN" "$RST" "$id"
+    return 0
+  fi
+  if [ "$MODE" = "check" ]; then
+    printf '  %smissing%s %-22s no public key on file\n' "$YEL" "$RST" "$id"
+    return 1
+  fi
+
+  if [ -f "$priv" ]; then
+    if ssh-keygen -y -f "$priv" > "$pub" 2>/dev/null; then
+      chmod 644 "$pub"
+      printf '  %srepair%s  %-22s odtworzony .pub z istniejącego klucza prywatnego\n' \
+        "$GRN" "$RST" "$id"
+      return 0
+    fi
+    rm -f "$pub"
+    printf '  %sFAIL%s    %-22s klucz prywatny istnieje, ale nie da się z niego odtworzyć .pub\n' \
+      "$RED" "$RST" "$id"
+    return 1
+  fi
+
+  ssh-keygen -t ed25519 -N "" -C "$id" -f "$priv" -q </dev/null || {
+    printf '  %sFAIL%s    %-22s ssh-keygen failed\n' "$RED" "$RST" "$id"
+    return 1
+  }
+  cp "$priv.pub" "$pub"
+  chmod 600 "$priv"; chmod 644 "$pub"
+  printf '  %smint%s    %-22s %s\n' "$GRN" "$RST" "$id" \
+    "$(ssh-keygen -lf "$pub" | awk '{print $2}')"
+}
+
+
+register_role() {
+  local id="$1" core="${CORE_URL:-http://127.0.0.1:$("$REPO_ROOT/lib/ports.py" consciousness-server 3032)}"
+  local role_lc; role_lc="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
+  local body; body="$(printf '{"name":"%s","location":"%s","role":"%s"}' \
+    "$id" "$(hostname)" "$role_lc")"
+
+  local hdrs=() priv="$KEYS_PRIV/$id"
+  if [ -f "$priv" ]; then
+    while IFS= read -r line; do hdrs+=(-H "$line"); done < <(
+      AGENT_PRIV_KEY="$priv" "$REPO_ROOT/bin/sign-request" \
+        "$id" POST /api/agents/register "$body" 2>/dev/null
+    )
+  fi
+
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+    -X POST "$core/api/agents/register" \
+    -H 'Content-Type: application/json' "${hdrs[@]}" -d "$body" 2>/dev/null)"
+
+  case "$code" in
+    200|201) printf '  %sok%s      %-22s registered with core\n' "$GRN" "$RST" "$id" ;;
+    000)     printf '  %sskip%s    %-22s core unreachable at %s\n' "$YEL" "$RST" "$id" "$core" ;;
+    *)       printf '  %sFAIL%s    %-22s core answered HTTP %s\n' "$RED" "$RST" "$id" "$code" ;;
+  esac
+}
+
+
+ensure_allowlist() {
+  local cfg="$REPO_ROOT/key-server/auth/allowed-clients.json"
+
+  if [ -f "$cfg" ]; then
+    printf '  %sok%s      %-22s allowlist present\n' "$GRN" "$RST" "key-server"
+    return 0
+  fi
+  if [ "$MODE" = "check" ]; then
+    printf '  %smissing%s %-22s no auth/allowed-clients.json\n' "$YEL" "$RST" "key-server"
+    return 1
+  fi
+  cp "$cfg.example" "$cfg" || return 1
+  printf '  %swrite%s   %-22s allowlist seeded from .example\n' "$GRN" "$RST" "key-server"
+}
+
+
+if [ "$MODE" != "check" ]; then
+  mkdir -p "$KEYS_PRIV" "$KEYS_PUB" || {
+    printf '%sbootstrap-keys: cannot create %s or %s%s\n' \
+      "$RED" "$KEYS_PRIV" "$KEYS_PUB" "$RST" >&2
+    exit 1
+  }
+  chmod 700 "$KEYS_PRIV"
+fi
+
+printf '\nIdentities in this deployment:\n'
+MISSING=0
+while IFS= read -r id; do
+  mint_one "$id" || MISSING=$((MISSING + 1))
+done < <(all_identities)
+
+printf '\nKey-server access:\n'
+ensure_allowlist || MISSING=$((MISSING + 1))
+
+if [ "$MODE" = "register" ]; then
+  printf '\nRegistering roles with the core:\n'
+  while IFS= read -r id; do register_role "$id"; done < <(roles)
+fi
+
+TOTAL="$(all_identities | wc -l)"
+printf '\n%s identities, %s public keys on file\n' \
+  "$TOTAL" "$(find "$KEYS_PUB" -name '*.pub' 2>/dev/null | wc -l)"
+
+if [ "$MISSING" -gt 0 ]; then
+  if [ "$MODE" = "check" ]; then
+    printf '%s%s tożsamości bez klucza — uruchom bin/bootstrap-keys%s\n' \
+      "$YEL" "$MISSING" "$RST"
+  else
+    printf '%s%s tożsamości NIE dostało klucza — powód wyżej%s\n' \
+      "$RED" "$MISSING" "$RST"
+  fi
+  exit 1
+fi
+exit 0

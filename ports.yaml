@@ -1,0 +1,22 @@
+
+ports:
+  consciousness-server: 13032
+  semantic-search: 13037
+  machines-server: 13038
+  key-server: 13040
+  test-runner: 13041
+  git-workflow: 13042
+  memory-server: 13045
+  redis: 16380
+  postgres: 15432
+  ollama: 11434
+
+active_blocks:
+  - consciousness-server
+  - semantic-search
+  - machines-server
+  - key-server
+  - test-runner
+  - git-workflow
+  - memory-server
+

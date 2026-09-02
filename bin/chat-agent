@@ -1,0 +1,424 @@
+#!/usr/bin/env python3
+"""chat-agent — turn a Markdown character profile + an Ollama model into an
+agent that listens to Consciousness Server chat and replies when addressed.
+
+Why this script exists: Cortex's worker mode polls the task queue, not the
+chat channel. For free-flowing debate-style scenarios we need agents that
+react to chat broadcasts. This script is the missing chat-watcher piece
+of the public ecosystem.
+
+Wiring per agent:
+  bin/chat-agent --name architect-postgres \\
+
+What it does:
+  1. POST /api/agents/register  — show up in the agent registry.
+  2. Subscribe to CS chat over WebSocket. Default subscription is `*`.
+  3. On every incoming chat message:
+       - skip if it is from us (no self-loops)
+       - skip unless `@<our-name>` appears in the content (or
+         to == `@<our-name>` for direct addressing). This is the loop
+         brake — agents only speak when explicitly invited.
+  4. Build a prompt: character profile (system) + last N chat messages
+     (transcript) + the triggering message (user turn).
+  5. Call Ollama /api/chat with the model.
+  6. PATCH our FSM state: IDLE → BUSY while thinking, BUSY → IDLE after.
+  7. POST the model's reply back to /api/chat as `from=<our-name>, to=@all`.
+
+The agent is intentionally simple — no tools, no policy engine. For an
+agent that needs to run shell commands or read files (e.g. ``tester`` in
+the debate scenario), use Cortex worker mode instead and have the
+operator post tasks instead of chat-only mentions. Architects, deciders,
+critics — voices that reason about other agents' words — fit this script.
+
+Requires: pip install websocket-client requests
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+try:
+    import websocket
+    import requests
+except ImportError:
+    sys.stderr.write("chat-agent: pip install websocket-client requests\n")
+    sys.exit(1)
+
+
+_HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HERE.parent))
+try:
+    from lib.ports import get_port
+except Exception:
+    def get_port(_n, fallback=None):
+        return fallback if fallback is not None else 3032
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def log(msg: str) -> None:
+    sys.stderr.write(f"[chat-agent] {msg}\n")
+    sys.stderr.flush()
+
+
+_SIGN_REQUEST = _HERE / "sign-request"
+_warned_unsigned = False
+
+
+def _sign_headers(agent: str, method: str, path: str, body: str = "") -> dict[str, str]:
+    """Sign `method path` (+ exact body bytes) via a bin/sign-request
+    subprocess. Same rationale as bin/status-collector's twin function:
+    heartbeats every 15s and chat replies on human-timescale triggers are
+    nowhere near hot enough to justify a second Python implementation of the
+    canonical-string/key-resolution logic bash/Node/Go already share.
+
+    `body` must be the exact string handed to the HTTP call afterwards, not
+    re-derived — requests' own `json=` re-serializes independently and can
+    differ in whitespace from whatever was signed, which verifies as
+    bad_signature (looks like a protocol bug) rather than missing_headers
+    (looks like a caller mistake). Callers here always build the JSON
+    string once and pass the same string both to this function and to
+    `data=`.
+
+    Never raises, never blocks the agent loop on a missing key: returns {}
+    and warns once (not on every call) if no identity is configured — a
+    chat agent that cannot see its own key should keep listening, not die
+    over it, same "warn, don't stop" rule presence and status-collector use.
+    """
+    global _warned_unsigned
+    args = [str(_SIGN_REQUEST), agent, method, path]
+    if body:
+        args.append(body)
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        if not _warned_unsigned:
+            log(f"BEZ PODPISU (sign-request nie odpalilo sie: {e}); CS odrzuci wywolanie")
+            _warned_unsigned = True
+        return {}
+    if proc.returncode != 0:
+        if not _warned_unsigned:
+            reason = proc.stderr.strip() or f"exit {proc.returncode}"
+            log(f"BEZ PODPISU ({reason}); CS odrzuci wywolanie")
+            _warned_unsigned = True
+        return {}
+    headers = {}
+    for line in proc.stdout.splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            headers[k.strip()] = v.strip()
+    return headers
+
+
+def load_profile(path: str) -> str:
+    if not path:
+        return "You are a helpful assistant."
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError as e:
+        log(f"WARNING: could not read profile {path}: {e}")
+        return "You are a helpful assistant."
+
+
+class CSClient:
+    def __init__(self, base_url: str, agent_name: str):
+        self.base = base_url.rstrip("/")
+        self.name = agent_name
+        self.session = requests.Session()
+
+    def _signed_post(self, path: str, payload: dict, timeout: int):
+        body = json.dumps(payload, separators=(",", ":"))
+        headers = {"Content-Type": "application/json",
+        return self.session.post(f"{self.base}{path}", data=body, headers=headers, timeout=timeout)
+
+    def register(self, role: str = "chat-agent", location: str = "local") -> None:
+        try:
+            r = self._signed_post(
+                "/api/agents/register",
+                {"name": self.name, "role": role, "location": location},
+                timeout=5,
+            )
+            if r.status_code >= 300:
+                log(f"register: HTTP {r.status_code} {r.text[:120]}")
+            else:
+                log(f"registered as {self.name}")
+        except requests.RequestException as e:
+            log(f"register failed: {e}")
+
+    def set_status(self, status: str) -> None:
+        try:
+            path = f"/api/agents/{self.name}/status"
+            body = json.dumps({"status": status}, separators=(",", ":"))
+            headers = {"Content-Type": "application/json",
+            self.session.patch(f"{self.base}{path}", data=body, headers=headers, timeout=3)
+        except requests.RequestException as e:
+            log(f"set_status({status}) failed: {e}")
+
+    def heartbeat(self) -> None:
+        try:
+            path = f"/api/agents/{self.name}/heartbeat"
+            headers = _sign_headers(self.name, "POST", path)
+            self.session.post(f"{self.base}{path}", headers=headers, timeout=3)
+        except requests.RequestException:
+            pass
+
+    def post_chat(self, content: str, to: str = "@all") -> None:
+        try:
+            r = self._signed_post(
+                "/api/chat",
+                {"from": self.name, "to": to, "content": content},
+                timeout=10,
+            )
+            if r.status_code >= 300:
+                log(f"post_chat: HTTP {r.status_code} {r.text[:120]}")
+        except requests.RequestException as e:
+            log(f"post_chat failed: {e}")
+
+    def recent_chat(self, limit: int = 20) -> list[dict]:
+        try:
+            headers = _sign_headers(self.name, "GET", "/api/chat")
+            r = self.session.get(
+                f"{self.base}/api/chat",
+                params={"limit": limit},
+                headers=headers,
+                timeout=5,
+            )
+            if r.status_code >= 300:
+                return []
+            data = r.json()
+            return data if isinstance(data, list) else (data.get("messages") or [])
+        except requests.RequestException:
+            return []
+
+
+def call_ollama(ollama_url: str, model: str, system: str, transcript: list[dict],
+                user_msg: str, timeout: int = 120) -> str:
+    """Call Ollama /api/chat. transcript is a list of {from, content}. We map
+    other agents' messages to `assistant`-style turns labelled with the
+    speaker, and the triggering one to a final `user` turn so the model
+    treats it as the prompt to answer."""
+    messages = [{"role": "system", "content": system}]
+    if transcript:
+        lines = []
+        for m in transcript:
+            who = m.get("from") or "?"
+            content = (m.get("content") or "").strip()
+            if not content:
+                continue
+            lines.append(f"{who}: {content}")
+        if lines:
+            messages.append({
+                "role": "user",
+                "content": "Recent conversation in the team chat:\n\n"
+                           + "\n".join(lines)
+                           + "\n\nNow answer the latest message addressed to you.",
+            })
+    messages.append({"role": "user", "content": user_msg})
+
+    try:
+        r = requests.post(
+            f"{ollama_url.rstrip('/')}/api/chat",
+            json={"model": model, "messages": messages, "stream": False,
+                  "options": {"temperature": 0.7}},
+            timeout=timeout,
+        )
+        r.raise_for_status()
+        data = r.json()
+        return (data.get("message") or {}).get("content", "").strip()
+    except requests.RequestException as e:
+        log(f"ollama call failed: {e}")
+        return ""
+
+
+class AgentState:
+    def __init__(self, name: str, cs: CSClient, ollama_url: str, model: str,
+                 profile: str, transcript_limit: int):
+        self.name = name
+        self.cs = cs
+        self.ollama_url = ollama_url
+        self.model = model
+        self.profile = profile
+        self.transcript_limit = transcript_limit
+        self.busy_lock = threading.Lock()
+        self.stop = threading.Event()
+
+
+def addressed_to_me(msg: dict, my_name: str) -> bool:
+    to = (msg.get("to") or "").strip().lower()
+    content = (msg.get("content") or "")
+    me = my_name.lower()
+    if to == f"@{me}":
+        return True
+    needle = f"@{me}"
+    lc = content.lower()
+    idx = 0
+    while True:
+        idx = lc.find(needle, idx)
+        if idx < 0:
+            return False
+        end = idx + len(needle)
+        if end == len(lc) or not (lc[end].isalnum() or lc[end] in "-_"):
+            return True
+        idx = end
+
+
+def handle_chat_message(state: AgentState, raw_msg: dict) -> None:
+    data = raw_msg.get("data") or raw_msg
+    sender = (data.get("from") or "").strip()
+    if sender == state.name:
+        return
+    if not addressed_to_me(data, state.name):
+        return
+
+    log(f"addressed by {sender}: {(data.get('content') or '')[:80]}")
+
+    if not state.busy_lock.acquire(blocking=False):
+        log("already replying — dropping duplicate trigger")
+        return
+
+    def _work():
+        try:
+            state.cs.set_status("BUSY")
+            transcript = state.cs.recent_chat(limit=state.transcript_limit)
+            trigger_id = data.get("message_id") or data.get("id")
+            if trigger_id:
+                transcript = [m for m in transcript
+                              if (m.get("message_id") or m.get("id")) != trigger_id]
+            t0 = time.monotonic()
+            reply = call_ollama(
+                state.ollama_url, state.model,
+                system=state.profile,
+                transcript=transcript[-state.transcript_limit:],
+                user_msg=f"{sender} just said: {data.get('content', '')}",
+            )
+            dt = time.monotonic() - t0
+            if reply:
+                log(f"replying ({len(reply)} chars, {dt:.1f}s)")
+                state.cs.post_chat(reply)
+            else:
+                log("model returned empty — staying quiet")
+        finally:
+            state.cs.set_status("IDLE")
+            state.busy_lock.release()
+
+    threading.Thread(target=_work, daemon=True).start()
+
+
+def heartbeat_loop(state: AgentState) -> None:
+    while not state.stop.wait(15):
+        state.cs.heartbeat()
+
+
+def on_open(ws):
+    state: AgentState = ws._state
+    log(f"WS connected as {state.name}")
+    state.cs.set_status("IDLE")
+
+
+def on_message(ws, raw):
+    state: AgentState = ws._state
+    try:
+        msg = json.loads(raw)
+    except (TypeError, ValueError):
+        return
+    channel = msg.get("channel") or ""
+    mtype = msg.get("type") or ""
+    if channel == "chat" or mtype.startswith("chat"):
+        handle_chat_message(state, msg)
+
+
+def on_error(_ws, err):
+    log(f"WS error: {err}")
+
+
+def on_close(ws, code, _reason):
+    state: AgentState = ws._state
+    log(f"WS disconnected ({code})")
+    try:
+        state.cs.set_status("OFFLINE")
+    except Exception:
+        pass
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    ap.add_argument("--name", required=True, help="agent name (unique in CS)")
+    ap.add_argument("--profile", default="", help="path to character profile .md")
+    ap.add_argument("--model", default=os.environ.get("OLLAMA_MODEL", "gemma4:e4b"),
+                    help="Ollama model name (default: $OLLAMA_MODEL or gemma4:e4b)")
+    ap.add_argument("--cs", default=os.environ.get("CS_URL", ""),
+                    help="CS base URL (default: $CS_URL or localhost:<ports.yaml>)")
+    ap.add_argument("--ollama", default=os.environ.get("OLLAMA_URL", "http://localhost:11434"))
+    ap.add_argument("--transcript-limit", type=int, default=20,
+                    help="how many recent chat messages to include as context")
+    ap.add_argument("--role", default="chat-agent")
+    args = ap.parse_args()
+
+    cs_url = args.cs or f"http://localhost:{get_port('consciousness-server', 3032)}"
+    profile = load_profile(args.profile)
+
+    cs = CSClient(cs_url, args.name)
+    cs.register(role=args.role)
+
+    state = AgentState(
+        name=args.name, cs=cs, ollama_url=args.ollama, model=args.model,
+        profile=profile, transcript_limit=args.transcript_limit,
+    )
+
+    threading.Thread(target=heartbeat_loop, args=(state,), daemon=True).start()
+
+    ws_url = cs_url.replace("https://", "wss://").replace("http://", "ws://")
+    ws_url = f"{ws_url.rstrip('/')}/{args.name}"
+
+    print(f"chat-agent {args.name} → {cs_url} ({args.model})", flush=True)
+    if args.profile:
+        print(f"  profile: {args.profile} ({len(profile)} chars)", flush=True)
+    print(f"  triggers on: messages containing @{args.name} or to=@{args.name}",
+          flush=True)
+    print(f"  transcript: last {args.transcript_limit} messages", flush=True)
+
+    backoff = 1
+    while not state.stop.is_set():
+        ws = websocket.WebSocketApp(
+            ws_url, on_open=on_open, on_message=on_message,
+            on_error=on_error, on_close=on_close,
+        )
+        ws._state = state
+
+        def _sigint(_s, _f, _ws=ws):
+            state.stop.set()
+            _ws.close()
+
+        signal.signal(signal.SIGINT, _sigint)
+        signal.signal(signal.SIGTERM, _sigint)
+
+        try:
+            ws.run_forever(ping_interval=20, ping_timeout=10)
+        except Exception as e:
+            log(f"crash: {e}")
+
+        if state.stop.is_set():
+            try:
+                cs.set_status("OFFLINE")
+            except Exception:
+                pass
+            return 0
+        time.sleep(backoff)
+        backoff = min(backoff * 2, 30)
+        log(f"reconnecting in {backoff}s…")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

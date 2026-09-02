@@ -1,0 +1,197 @@
+name: cs-ecosystem
+
+services:
+
+  redis:
+    image: redis:7-alpine
+    container_name: cs-redis
+    ports:
+      - "${PORT_REDIS:-16380}:6379"
+    volumes:
+      - ./volumes/redis:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  semantic-search:
+    build:
+      context: ..
+      dockerfile: semantic-search/Dockerfile
+    container_name: cs-semantic-search
+    network_mode: host
+    volumes:
+      - ./volumes/chroma:/data/chroma
+      - ./volumes/semantic-search-logs:/app/logs
+    environment:
+      OLLAMA_URL: http://localhost:11434
+      EMBEDDING_MODEL: nomic-embed-text
+      CHROMA_PATH: /data/chroma
+      PORT: "${PORT_SEMANTIC_SEARCH:-13037}"
+      KEY_SERVER_URL: http://127.0.0.1:${PORT_KEY_SERVER:-13040}
+    restart: unless-stopped
+
+  consciousness-server:
+    build:
+      context: ..
+      dockerfile: core/Dockerfile
+    container_name: cs-server
+    ports:
+      - "${PORT_CONSCIOUSNESS_SERVER:-13032}:3032"
+    volumes:
+      - ../agents:/data/agents:ro
+      - ../skills:/data/skills:ro
+      - ../services.yaml:/data/services.yaml:ro
+      - ./volumes/cs-logs:/app/logs
+      - ./volumes/chat-archives:/data/chat-archives
+      - ./volumes/inbox-attachments:/data/inbox-attachments
+      - ./keys:/keys:ro
+    environment:
+      PORT: "3032"
+      CONSCIOUSNESS_HOST: 0.0.0.0
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      ECOSYSTEM_ROOT: /data
+      AGENTS_DIR: /data/agents
+      SKILLS_DIR: /data/skills
+      SERVICES_YAML: /data/services.yaml
+      SEMANTIC_SEARCH_URL: http://host.docker.internal:${PORT_SEMANTIC_SEARCH:-13037}
+      HOME: /tmp
+      KEY_SERVER_URL: ${KEY_SERVER_URL:-http://key-server:3040}
+      CS_SIGNING_KEY: /keys/cs-core
+      CS_AGENT_ID: cs-core
+      CHAT_ARCHIVE_DIR: /data/chat-archives
+      INBOX_ATTACHMENT_DIR: /data/inbox-attachments
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  key-server:
+    build:
+      context: ..
+      dockerfile: key-server/Dockerfile
+    container_name: cs-key-server
+    ports:
+      - "${PORT_KEY_SERVER:-13040}:3040"
+    volumes:
+      - ../key-server/keys:/app/keys:ro
+      - ../key-server/auth:/app/auth:ro
+      - ./volumes/key-server-logs:/app/logs
+    environment:
+      KEY_SERVER_PORT: "3040"
+      KEY_SERVER_HOST: 0.0.0.0
+      # Host allowlist must name every address a caller uses, or the rebinding guard answers 403.
+      KEY_SERVER_ALLOWED_HOSTS: "key-server:3040,localhost:3040,127.0.0.1:3040,[::1]:3040,127.0.0.1:${PORT_KEY_SERVER:-13040},localhost:${PORT_KEY_SERVER:-13040},[::1]:${PORT_KEY_SERVER:-13040}"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  test-runner:
+    build:
+      context: ..
+      dockerfile: test-runner/Dockerfile
+    container_name: cs-test-runner
+    ports:
+      - "${PORT_TEST_RUNNER:-13041}:3041"
+    volumes:
+      - ./volumes/test-runner-workspaces:/workspaces
+      - ./volumes/test-runner-logs:/app/logs
+    environment:
+      PORT: "3041"
+      KEY_SERVER_URL: ${KEY_SERVER_URL:-http://key-server:3040}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  git-workflow:
+    build:
+      context: ..
+      dockerfile: git-workflow/Dockerfile
+    container_name: cs-git-workflow
+    ports:
+      - "${PORT_GIT_WORKFLOW:-13042}:3042"
+    volumes:
+      - ./volumes/git-workflow:/data
+      - ./volumes/git-workflow-logs:/app/logs
+    environment:
+      PORT: "3042"
+      DB_PATH: /data/commits.db
+      KEY_SERVER_URL: ${KEY_SERVER_URL:-http://key-server:3040}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  machines-server:
+    build:
+      context: ..
+      dockerfile: machines-server/Dockerfile
+    container_name: cs-machines-server
+    ports:
+      - "${PORT_MACHINES_SERVER:-13038}:3038"
+    volumes:
+      - ../machines:/data/machines:ro
+      - ../services.yaml:/data/services.yaml:ro
+      - ./volumes/machines-logs:/app/logs
+      - ./keys:/keys:ro
+    environment:
+      PORT: "3038"
+      CS_URL: ${CS_URL:-http://consciousness-server:3032}
+      MACHINES_DIR: /data/machines
+      SERVICES_YAML: /data/services.yaml
+      KEY_SERVER_URL: ${KEY_SERVER_URL:-http://key-server:3040}
+      CS_SIGNING_KEY: /keys/machines-server
+      CS_AGENT_ID: machines-server
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  memory-postgres:
+    image: pgvector/pgvector:pg16
+    container_name: cs-memory-postgres
+    profiles: ["mesh", "full"]
+    ports:
+      - "${MEMORY_PG_HOST_PORT:-15432}:5432"
+    environment:
+      POSTGRES_DB: ${MEMORY_PG_DB:-memory}
+      POSTGRES_USER: ${MEMORY_PG_USER:-memory}
+      POSTGRES_PASSWORD: ${MEMORY_PG_PASSWORD:-memory}
+    volumes:
+      - ./volumes/memory-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${MEMORY_PG_USER:-memory} -d ${MEMORY_PG_DB:-memory}"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  memory-server:
+    build:
+      context: ..
+      dockerfile: memory-server/Dockerfile
+    container_name: cs-memory-server
+    profiles: ["mesh", "full"]
+    depends_on:
+      memory-postgres:
+        condition: service_healthy
+    network_mode: host
+    environment:
+      MEMORY_SERVER_HOST: 0.0.0.0
+      PORT: "${PORT_MEMORY_SERVER:-13045}"
+      MEMORY_PG_HOST: 127.0.0.1
+      MEMORY_PG_PORT: "${MEMORY_PG_HOST_PORT:-15432}"
+      MEMORY_PG_DB: ${MEMORY_PG_DB:-memory}
+      MEMORY_PG_USER: ${MEMORY_PG_USER:-memory}
+      MEMORY_PG_PASSWORD: ${MEMORY_PG_PASSWORD:-memory}
+      OLLAMA_URL: http://localhost:11434
+      EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
+      KEY_SERVER_URL: http://localhost:${PORT_KEY_SERVER:-13040}
+    restart: unless-stopped

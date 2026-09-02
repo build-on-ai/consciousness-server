@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -u
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CORE="${CS_URL:-http://127.0.0.1:$("$REPO_ROOT/lib/ports.py" consciousness-server 3032)}"
+AGENT="${BOA_AGENT:-${CS_AGENT_ID:-}}"
+LIMIT="${LIMIT:-500}"
+
+if [ "${1-}" = "--as" ]; then
+  AGENT="$2"; shift 2
+fi
+
+OUT="${1:-$HOME/Desktop/czat-$(date +%Y-%m-%d).md}"
+
+case "$OUT" in
+  "$REPO_ROOT"/*)
+    echo "chat-export: odmawiam zapisu do repozytorium ($OUT)" >&2
+    echo "  treść czatu to dane, nie kod — wskaż ścieżkę poza katalogiem" >&2
+    exit 2
+    ;;
+esac
+
+if [ -z "$AGENT" ]; then
+  echo "chat-export: nie wiadomo, kim podpisać odczyt." >&2
+  echo "  podaj --as <ROLA>, albo ustaw BOA_AGENT lub CS_AGENT_ID" >&2
+  exit 2
+fi
+
+HDRS="$("$REPO_ROOT/bin/sign-request" "$AGENT" GET "/api/chat" "")" || {
+  echo "chat-export: nie udało się podpisać żądania jako $AGENT" >&2
+  exit 1
+}
+
+ARGS=()
+while IFS= read -r line; do
+  [ -n "$line" ] && ARGS+=(-H "$line")
+done <<< "$HDRS"
+
+BODY="$(curl -s --max-time 20 "${ARGS[@]}" "$CORE/api/chat?limit=$LIMIT")" || {
+  echo "chat-export: rdzeń nie odpowiedział na $CORE" >&2
+  exit 1
+}
+
+RAW="$(mktemp -t chat-export-XXXXXX.json)"
+trap 'rm -f "$RAW"' EXIT
+printf '%s' "$BODY" > "$RAW"
+
+RAW="$RAW" OUT="$OUT" CORE="$CORE" python3 <<'PY'
+import json, os, sys, textwrap
+
+try:
+    with open(os.environ["RAW"]) as fh:
+        data = json.load(fh)
+except json.JSONDecodeError:
+    sys.stderr.write("chat-export: rdzeń zwrócił coś, co nie jest JSON-em\n")
+    sys.exit(1)
+
+msgs = data.get("messages") if isinstance(data, dict) else data
+msgs = msgs or []
+
+out = ["# Czat zespołu BuildOnAI", "",
+       f"Wyeksportowano z {os.environ['CORE']}. Wiadomości: {len(msgs)}.", ""]
+
+day = None
+for m in msgs:
+    ts = m.get("timestamp") or ""
+    d, t = (ts[:10], ts[11:19]) if len(ts) >= 19 else ("bez daty", "?")
+    if d != day:
+        day = d
+        out += ["", f"## {d}", ""]
+    mentions = m.get("mentions") or []
+    tag = "  → " + ", ".join(mentions) if mentions else ""
+    out.append(f"### {t} — {m.get('from', '?')}{tag}")
+    out += textwrap.wrap(" ".join((m.get("content") or "").split()), 100) or ["(pusta wiadomość)"]
+    out.append("")
+
+dest = os.environ["OUT"]
+with open(dest, "w") as fh:
+    fh.write("\n".join(out))
+print("chat-export: %d wiadomości → %s" % (len(msgs), dest))
+PY

@@ -1,0 +1,58 @@
+
+'use strict';
+
+function deepFreeze(value) {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) {
+      deepFreeze(child);
+    }
+  }
+  return value;
+}
+const ErrorResponseSchema = deepFreeze({
+  "type": "object",
+  "required": [
+    "error"
+  ],
+  "properties": {
+    "error": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    },
+    "details": {
+      "nullable": true
+    }
+  }
+});
+
+const PaginationSchema = deepFreeze({
+  "type": "object",
+  "required": [
+    "limit",
+    "offset",
+    "returned"
+  ],
+  "properties": {
+    "limit": {
+      "type": "integer"
+    },
+    "offset": {
+      "type": "integer"
+    },
+    "returned": {
+      "type": "integer"
+    },
+    "next_offset": {
+      "type": "integer",
+      "nullable": true
+    }
+  }
+});
+
+module.exports = {
+  ErrorResponseSchema,
+  PaginationSchema,
+};

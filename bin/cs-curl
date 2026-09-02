@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+
+set -u
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+
+BLOCK="consciousness-server"
+AGENT="${CS_AGENT_ID:-cs-core}"
+HOST="127.0.0.1"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -b) BLOCK="$2"; shift 2 ;;
+    -a) AGENT="$2"; shift 2 ;;
+    -H) HOST="$2"; shift 2 ;;
+    -h|--help) echo "usage: cs-curl [-b BLOCK] [-a AGENT] METHOD PATH [BODY|@FILE] [-- curl-args]"; exit 0 ;;
+    *) break ;;
+  esac
+done
+
+if [ $# -lt 2 ]; then
+  echo "usage: cs-curl [-b BLOCK] [-a AGENT] METHOD PATH [BODY|@FILE] [-- curl-args]" >&2
+  exit 2
+fi
+
+METHOD="$1"; REQ_PATH="$2"; shift 2
+
+BODY=""
+case "${1:-}" in
+  ""|--) : ;;
+  *) BODY="$1"; shift ;;
+esac
+[ "${1:-}" = "--" ] && shift
+
+PORT="$("$ROOT/lib/ports.py" "$BLOCK" 2>/dev/null)" || {
+  echo "cs-curl: no port for block '$BLOCK' in ports.yaml" >&2
+  exit 2
+}
+
+HDRS="$("$HERE/sign-request" "$AGENT" "$METHOD" "$REQ_PATH" ${BODY:+"$BODY"})" || {
+  echo "cs-curl: signing failed for agent '$AGENT'." >&2
+  echo "         Run bin/bootstrap-keys, or set AGENT_PRIV_KEY to its private key." >&2
+  exit 2
+}
+
+CURL_ARGS=()
+while IFS= read -r line; do
+  [ -n "$line" ] && CURL_ARGS+=(-H "$line")
+done <<< "$HDRS"
+
+if [ -n "$BODY" ]; then
+  CURL_ARGS+=(-H "Content-Type: application/json")
+  case "$BODY" in
+    @*) CURL_ARGS+=(--data-binary "$BODY") ;;
+    *)  CURL_ARGS+=(--data-binary "$BODY") ;;
+  esac
+fi
+
+exec curl -X "$METHOD" "${CURL_ARGS[@]}" "$@" "http://${HOST}:${PORT}${REQ_PATH}"

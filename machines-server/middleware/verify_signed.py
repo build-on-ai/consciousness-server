@@ -1,0 +1,1 @@
+../../lib/verify_signed.py

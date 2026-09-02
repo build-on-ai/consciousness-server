@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""chat-compose — miejsce, w którym człowiek pisze do agentów.
+
+Użycie:
+  bin/chat-compose [--as OPERATOR] [--cs http://host:3032] [--no-presence]
+
+Uruchamiaj w OSOBNYM panelu tmux, obok `bin/chat-panel`, nie zamiast niego:
+panel pokazuje rozmowę, ten skrypt do niej dopisuje. Rozdzielenie nie jest
+kwestią gustu — `chat-panel` blokuje na `ws.run_forever()` w jednym wątku
+(`bin/chat-panel:167-183`), więc przychodząca wiadomość wcinałaby się w linię,
+którą właśnie piszesz.
+
+Dlaczego nie rozbudowany `bin/say`: tamten jest jednorazowym wywołaniem dla
+skryptów i wymaga przepisania prefiksu przy każdej linii. Do rozmowy trzeba
+procesu, który czeka.
+
+Kody wyjścia: 0 normalne zakończenie, 1 brak łączności lub klucza, 2 zły argument.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+try:
+    import readline
+except ImportError:
+    pass
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+
+try:
+    from lib.ports import get_port
+except Exception:
+    def get_port(_name, fallback=None):
+        return fallback if fallback is not None else 3032
+
+RESET = "\033[0m"
+DIM = "\033[2m"
+BOLD = "\033[1m"
+RED = "\033[38;5;203m"
+GREEN = "\033[38;5;82m"
+YELLOW = "\033[38;5;226m"
+
+
+def sign(agent: str, method: str, path: str, body: str) -> dict[str, str]:
+    """Podpisuje żądanie, wołając bin/sign-request.
+
+    Podproces, nie własna implementacja: kanoniczna wiadomość ma już trzy
+    wersje (bash, Node, Go) i czwarta byłaby czwartym miejscem, w którym
+    format może się rozjechać. Tak samo robi bin/status-collector.
+    """
+    out = subprocess.run(
+        [str(REPO / "bin" / "sign-request"), agent, method, path, body],
+        capture_output=True, text=True, timeout=20,
+    )
+    if out.returncode != 0:
+        raise RuntimeError(out.stderr.strip() or "sign-request nie powiodło się")
+
+    headers: dict[str, str] = {}
+    for line in out.stdout.splitlines():
+        if ":" in line:
+            key, _, value = line.partition(":")
+            headers[key.strip()] = value.strip()
+    return headers
+
+
+def post_chat(cs: str, agent: str, text: str) -> dict:
+    """Wysyła wiadomość i zwraca odpowiedź rdzenia.
+
+    Ścieżka podpisywana jest bez query stringu, bo weryfikator go obcina
+    (`core/middleware/verify-signed.js:243`). Podpisanie pełnego adresu daje
+    podpis, którego serwer nie odtworzy.
+    """
+    body = json.dumps({"from": agent, "content": text}, ensure_ascii=False)
+    headers = sign(agent, "POST", "/api/chat", body)
+    headers["Content-Type"] = "application/json"
+
+    req = urllib.request.Request(
+        f"{cs.rstrip('/')}/api/chat", data=body.encode("utf-8"),
+        headers=headers, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as err:
+        detail = err.read().decode("utf-8", "replace")[:300]
+        raise RuntimeError(f"rdzeń odrzucił ({err.code}): {detail}") from err
+    except urllib.error.URLError as err:
+        raise RuntimeError(f"rdzeń nie odpowiada: {err.reason}") from err
+
+
+def start_presence(agent: str, cs: str) -> subprocess.Popen | None:
+    """Uruchamia presence, żeby operator był w rejestrze i dało się do niego pisać.
+
+    Bez tego `@OPERATOR` nie rozwiązuje się w nic: rdzeń wylicza adresatów z
+    tablicy agents[], którą zapełnia wyłącznie rejestracja
+    (`core/server.js:3256`, `:1022`). Posiadanie klucza w deploy/keys to za
+    mało — dlatego wzmianka `@ROLA` potrafiła nie dotrzeć do nikogo,
+    mimo że klucz istniał.
+
+    ŚWIADOMIE BEZ --accept-prompts, i to z INNEGO powodu niż w boa-runnerze.
+    Tam brak tej flagi jest nierozwiązaną luką (`boa-runner/main.go:175-184`).
+    Tutaj jest zabezpieczeniem: z nią cudza wiadomość byłaby wpisywana w
+    linię, którą człowiek właśnie pisze. Kto kiedyś naprawi runner, niech nie
+    „naprawi" przez analogię także tego miejsca.
+    """
+    binary = REPO / "tui" / "presence"
+    if not binary.exists():
+        print(f"{DIM}chat-compose: brak {binary} — nie rejestruję tożsamości, "
+              f"nikt nie odpisze na @{agent}{RESET}", file=sys.stderr)
+        return None
+
+    proc = subprocess.Popen(
+        [str(binary), "--as", agent, "--role", "operator", "--core", cs],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    print(f"{DIM}chat-compose: presence uruchomiony jako {agent} "
+          f"(bez przyjmowania promptów — nikt nie wpisze Ci nic w linię){RESET}")
+    return proc
+
+
+def report(sent: dict, text: str) -> None:
+    """Mówi, kto to naprawdę dostanie — według rdzenia, nie według tekstu.
+
+    Klient widzi tylko, czy w zdaniu jest znak @. Rdzeń rozwiązuje wzmianki
+    wobec ŻYWEGO rejestru, więc `@ktoś-niezarejestrowany` znika bez śladu.
+    Jedyne miejsce z prawdą to pole mentions w odpowiedzi 201.
+    """
+    mentions = sent.get("mentions") or []
+    if mentions:
+        print(f"{GREEN}  → dotrze do: {', '.join(mentions)}{RESET}")
+        return
+
+    if "@" in text:
+        print(f"{RED}  → NIKT nie dostanie powiadomienia: żaden @ z tej wiadomości "
+              f"nie pasuje do zarejestrowanego agenta{RESET}")
+    else:
+        print(f"{YELLOW}  → bez @wzmianki — wiadomość jest w historii, "
+              f"ale nikogo nie powiadomiono{RESET}")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    ap.add_argument("--as", dest="agent",
+                    default=os.environ.get("BOA_AGENT", "OPERATOR"),
+                    help="tożsamość, którą podpisujesz wiadomości (domyślnie OPERATOR)")
+    ap.add_argument("--cs", default=os.environ.get("CS_URL", ""),
+                    help="adres rdzenia (domyślnie $CS_URL albo z ports.yaml)")
+    ap.add_argument("--no-presence", action="store_true",
+                    help="nie rejestruj tożsamości; nikt nie będzie mógł odpisać")
+    args = ap.parse_args()
+
+    cs = args.cs or f"http://localhost:{get_port('consciousness-server', 3032)}"
+    agent = args.agent
+
+    try:
+        sign(agent, "POST", "/api/chat", "{}")
+    except Exception as err:
+        print(f"{RED}chat-compose: nie mogę podpisywać jako {agent}: {err}{RESET}",
+              file=sys.stderr)
+        return 1
+
+    presence = None if args.no_presence else start_presence(agent, cs)
+
+    print(f"{BOLD}chat-compose{RESET} — piszesz jako {BOLD}{agent}{RESET} do {cs}")
+    print(f"{DIM}adresuj przez @NAZWA albo @all · pusta linia nic nie wysyła · "
+          f"Ctrl-D kończy{RESET}\n")
+
+    try:
+        while True:
+            try:
+                text = input(f"{BOLD}{agent}>{RESET} ").strip()
+            except EOFError:
+                print()
+                return 0
+            except KeyboardInterrupt:
+                print()
+                continue
+
+            if not text:
+                continue
+
+            try:
+                sent = post_chat(cs, agent, text)
+            except Exception as err:
+                print(f"{RED}  ✕ {err}{RESET}")
+                continue
+
+            report(sent, text)
+    finally:
+        if presence and presence.poll() is None:
+            presence.terminate()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

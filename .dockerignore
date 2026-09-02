@@ -1,0 +1,17 @@
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+deploy/volumes
+deploy/keys
+deploy/.env
+**/.env
+key-server/keys/*/*.pub
+key-server/auth/allowed-clients.json
+tui/bin
+tui/boa
+tui/boa-runner
+docs
+agents
+skills
+*.md

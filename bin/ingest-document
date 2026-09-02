@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+
+set -u
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+default_port() {
+  awk '/^[[:space:]]+memory-server:/ {print $2; exit}' \
+    "$REPO_ROOT/ports.yaml" 2>/dev/null || echo 3045
+}
+MEMORY_URL="${MEMORY_URL:-http://localhost:$(default_port)}"
+INGESTED_BY="${USER:-unknown}@$(hostname)"
+SOURCE_TYPE=""
+LANGUAGE=""
+METADATA="{}"
+FILE=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --type)         SOURCE_TYPE="$2"; shift 2 ;;
+    --memory)       MEMORY_URL="$2";  shift 2 ;;
+    --by)           INGESTED_BY="$2"; shift 2 ;;
+    --lang)         LANGUAGE="$2";    shift 2 ;;
+    --metadata-json) METADATA="$2";   shift 2 ;;
+    -h|--help)
+      echo "usage: ingest-document <path> [--type TYPE] [--memory URL] [--by AGENT] [--lang LANG] [--metadata-json STRING]"
+      exit 0 ;;
+    *)
+      if [ -z "$FILE" ]; then FILE="$1"; shift
+      else echo "ingest-document: unexpected arg: $1" >&2; exit 2; fi ;;
+  esac
+done
+
+if [ -z "$FILE" ] || [ ! -r "$FILE" ]; then
+  echo "ingest-document: file not readable: $FILE" >&2
+  exit 2
+fi
+
+if [ -z "$SOURCE_TYPE" ]; then
+  case "$FILE" in
+    *.pdf)              SOURCE_TYPE="pdf" ;;
+    *.docx|*.doc)       SOURCE_TYPE="docx" ;;
+    *.eml|*.msg)        SOURCE_TYPE="email" ;;
+    *.md|*.txt|*.rst)   SOURCE_TYPE="txt" ;;
+    *.html|*.htm)       SOURCE_TYPE="web_page" ;;
+    *.json)             SOURCE_TYPE="json" ;;
+    *)                  SOURCE_TYPE="txt" ;;
+  esac
+fi
+
+if ! curl -sfo /dev/null "$MEMORY_URL/health"; then
+  echo "ingest-document: memory-server not reachable at $MEMORY_URL" >&2
+  echo "  start it with:  cd deploy && docker compose --profile mesh up -d" >&2
+  exit 3
+fi
+
+CONTENT_B64=$(base64 -w 0 "$FILE")
+PAYLOAD=$(
+  python3 - "$FILE" "$SOURCE_TYPE" "$INGESTED_BY" "$LANGUAGE" "$METADATA" "$CONTENT_B64" <<'PY'
+import json, sys
+fp, stype, by, lang, meta_str, b64 = sys.argv[1:7]
+try:
+    meta = json.loads(meta_str) if meta_str else {}
+except Exception:
+    meta = {}
+out = {
+    "file_path": fp,
+    "source_type": stype,
+    "ingested_by": by,
+    "metadata": meta,
+    "content_b64": b64,
+}
+if lang:
+    out["language"] = lang
+print(json.dumps(out))
+PY
+)
+
+curl -sS -X POST "$MEMORY_URL/api/sources/ingest" \
+  -H 'Content-Type: application/json' \
+  -d "$PAYLOAD" \
+  | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin), indent=2, ensure_ascii=False))'

@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -37,7 +36,8 @@ func main() {
 
 	signer, err := api.LoadSigner(*name, api.ResolveKeyPath(*name, *keyPath))
 	if err != nil {
-		me := filepath.Base(os.Args[0])
+		// Bez Base, zeby komunikat dalo sie wkleic: binarka lezy w tui/, wiec ./boa.
+		me := os.Args[0]
 
 		hint := ""
 		if *keyPath != "" {
@@ -80,7 +80,7 @@ decyzją operatora.
 	p := tea.NewProgram(model)
 	if _, err := p.Run(); err != nil {
 		stream.Stop()
-		fmt.Fprintf(os.Stderr, "%s: %v\n", filepath.Base(os.Args[0]), err)
+		fmt.Fprintf(os.Stderr, "%s: %v\n", os.Args[0], err)
 		os.Exit(1)
 	}
 	stream.Stop()

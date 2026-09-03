@@ -24,7 +24,7 @@ func main() {
 	machines := flag.String("machines", envOr("BOA_MACHINES", ports.URL("machines-server", fallbackMachines)), "machines-server base URL")
 	keys := flag.String("keys", envOr("BOA_KEYS", ports.URL("key-server", fallbackKeys)), "key-server base URL; empty means this deployment has none")
 	name := flag.String("as", envOr("BOA_AGENT", "TUI"), "identity used on the WebSocket and when signing")
-	keyPath := flag.String("key", envOr("BOA_SIGNING_KEY", ""), "path to an OpenSSH ed25519 private key; without it the panel is read-only")
+	keyPath := flag.String("key", envOr("BOA_SIGNING_KEY", ""), "path to an OpenSSH ed25519 private key; the panel does not start without one")
 	version := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 

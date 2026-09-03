@@ -296,6 +296,32 @@ ok  	.../tui/internal/theme	0.002s
 ok  	.../tui/internal/tmux	0.002s
 ```
 
+## Build and run the TUI
+
+`boa` is a terminal panel over the same API the CLI uses. It needs Go 1.26 or
+newer and a running stack.
+
+```console
+$ (cd tui && go build -o boa ./cmd/boa)
+$ (cd tui && ./boa)
+```
+
+The panel signs every request, reads included, so it will not start without a
+key. With no `--key` it looks for the identity named by `--as` (default `TUI`)
+in `deploy/keys/`, which is where step 1 minted it, and then in
+`~/.ssh/ecosystem-<NAME>`. Point it somewhere else explicitly when you need to:
+
+```console
+$ (cd tui && ./boa --as TUI --key ~/.ssh/ecosystem-TUI)
+```
+
+`--core`, `--machines` and `--keys` take base URLs and default to the values in
+`ports.yaml`, so a stack on non-default ports needs no flags either. `--version`
+prints the build and exits.
+
+The panel drives a full-screen terminal: run it from a real terminal, not from a
+pipe or a CI step, or bubbletea exits with `could not open TTY`.
+
 ## Optional: document memory
 
 PostgreSQL with pgvector plus `memory-server` are opt-in:

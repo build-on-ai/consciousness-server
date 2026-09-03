@@ -1,5 +1,7 @@
 
-const SEARCH_URL = "http://127.0.0.1:3037";
+import { urlFor } from "../ports.js";
+
+const SEARCH_URL = urlFor("semantic-search", "SEMANTIC_SEARCH_URL", 13037);
 
 interface SearchResult {
   id: string;

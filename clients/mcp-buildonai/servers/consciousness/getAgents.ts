@@ -1,5 +1,7 @@
 
-const CS_URL = "http://127.0.0.1:3032";
+import { urlFor } from "../ports.js";
+
+const CS_URL = urlFor("consciousness-server", "CS_URL", 13032);
 
 interface Agent {
   name: string;

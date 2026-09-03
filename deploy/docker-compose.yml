@@ -159,7 +159,7 @@ services:
     container_name: cs-memory-postgres
     profiles: ["mesh", "full"]
     ports:
-      - "${MEMORY_PG_HOST_PORT:-15432}:5432"
+      - "${PORT_POSTGRES:?run bin/sync-ports first — deploy/.env is missing or stale}:5432"
     environment:
       POSTGRES_DB: ${MEMORY_PG_DB:-memory}
       POSTGRES_USER: ${MEMORY_PG_USER:-memory}
@@ -187,7 +187,7 @@ services:
       MEMORY_SERVER_HOST: 0.0.0.0
       PORT: "${PORT_MEMORY_SERVER:?run bin/sync-ports first — deploy/.env is missing or stale}"
       MEMORY_PG_HOST: 127.0.0.1
-      MEMORY_PG_PORT: "${MEMORY_PG_HOST_PORT:-15432}"
+      MEMORY_PG_PORT: "${PORT_POSTGRES:?run bin/sync-ports first — deploy/.env is missing or stale}"
       MEMORY_PG_DB: ${MEMORY_PG_DB:-memory}
       MEMORY_PG_USER: ${MEMORY_PG_USER:-memory}
       MEMORY_PG_PASSWORD: ${MEMORY_PG_PASSWORD:-memory}

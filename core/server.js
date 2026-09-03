@@ -27,10 +27,14 @@ const { ownPort, getPort } = require('./middleware/ports');
 const { signHeaders, assertUsable: assertSigningKeyUsable } = require('./middleware/sign-outbound');
 const {
   NOTE_EMBEDDING_OUTBOX_KEY,
-  defaultNoteTtlSeconds,
   persistNoteWithOutbox,
   createNoteEmbeddingOutbox,
 } = require('./note-embedding-outbox');
+const {
+  retentionSeconds,
+  noteRetentionSeconds,
+  taskRetentionSeconds,
+} = require('./retention');
 const { createChatArchive } = require('./chat-archive');
 const {
   DEFAULT_MAX_ATTACHMENT_BYTES,
@@ -503,26 +507,30 @@ function findBrainstormById(id) {
 }
 
 
+// Single write path so a term is never chosen at a call site.
+async function persistWithRetention(key, value, ttlSeconds) {
+  const payload = JSON.stringify(value);
+  if (ttlSeconds === null) {
+    await redisClient.set(key, payload);
+    return;
+  }
+  await redisClient.setEx(key, ttlSeconds, payload);
+}
+
 async function saveLog(log) {
-  const TTL_7_DAYS = 7 * 24 * 3600;
-  await redisClient.setEx(`log:${log.id}`, TTL_7_DAYS, JSON.stringify(log));
+  await persistWithRetention(`log:${log.id}`, log, retentionSeconds('log'));
 }
 
 async function saveTask(task) {
-  await redisClient.set(`task:${task.id}`, JSON.stringify(task));
-  if (task.status === 'DONE' || task.status === 'FAILED') {
-    const TTL_30_DAYS = 30 * 24 * 3600;
-    await redisClient.expire(`task:${task.id}`, TTL_30_DAYS);
-  }
+  await persistWithRetention(`task:${task.id}`, task, taskRetentionSeconds(task));
 }
 
 async function saveAgent(agent) {
-  const TTL_1_HOUR = 3600;
-  await redisClient.setEx(`agent:${agent.name}`, TTL_1_HOUR, JSON.stringify(agent));
+  await persistWithRetention(`agent:${agent.name}`, agent, retentionSeconds('agent'));
 }
 
 async function saveBrainstorm(brainstorm) {
-  await redisClient.set(`brainstorm:${brainstorm.id}`, JSON.stringify(brainstorm));
+  await persistWithRetention(`brainstorm:${brainstorm.id}`, brainstorm, retentionSeconds('brainstorm'));
 }
 
 async function deleteBrainstorm(id) {
@@ -531,17 +539,15 @@ async function deleteBrainstorm(id) {
 
 
 async function saveConversation(conv) {
-  const TTL_90_DAYS = 90 * 24 * 3600;
-  await redisClient.setEx(`conversation:${conv.id}`, TTL_90_DAYS, JSON.stringify(conv));
+  await persistWithRetention(`conversation:${conv.id}`, conv, retentionSeconds('conversation'));
 }
 
 async function saveTrainingData(data) {
-  await redisClient.set(`training:${data.id}`, JSON.stringify(data));
+  await persistWithRetention(`training:${data.id}`, data, retentionSeconds('training'));
 }
 
 async function saveSummary(summary) {
-  const TTL_90_DAYS = 90 * 24 * 3600;
-  await redisClient.setEx(`summary:${summary.id}`, TTL_90_DAYS, JSON.stringify(summary));
+  await persistWithRetention(`summary:${summary.id}`, summary, retentionSeconds('summary'));
 }
 
 async function loadConversationsFromRedis() {
@@ -1827,7 +1833,7 @@ noteEmbeddingOutbox.start();
 async function saveNote(note) {
   const transaction = redisClient.multi();
   persistNoteWithOutbox(transaction, note, {
-    ttlSeconds: defaultNoteTtlSeconds(note),
+    ttlSeconds: noteRetentionSeconds(note),
   });
   await transaction.exec();
   noteEmbeddingOutbox.wake();
@@ -2378,7 +2384,7 @@ app.post('/api/inbox/documents', async (req, res) => {
       request_fingerprint: requestFingerprint,
       created_at: timestamp,
     };
-    await redisClient.set(resultKey, JSON.stringify(result));
+    await persistWithRetention(resultKey, result, retentionSeconds('inbox.result'));
     broadcastToWs({ type: 'note_created', data: note });
     return res.status(201).json({ ...result, duplicate: false });
   } catch (error) {
@@ -2789,13 +2795,12 @@ app.get("/api/daemons/:agent", (req, res) => {
 
 
 async function saveChatMessage(msg) {
-  const TTL_1_DAY = 24 * 3600;
   try {
     await chatArchive.journal(msg);
   } catch (error) {
     console.error(`[chat-archive] journal failed for ${msg.id}: ${error.message}`);
   }
-  await redisClient.setEx(`chat:${msg.id}`, TTL_1_DAY, JSON.stringify(msg));
+  await persistWithRetention(`chat:${msg.id}`, msg, retentionSeconds('chat'));
 }
 
 async function loadChatFromRedis() {

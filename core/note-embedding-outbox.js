@@ -1,15 +1,6 @@
 'use strict';
 
 const NOTE_EMBEDDING_OUTBOX_KEY = 'outbox:note-embedding';
-const NOTE_TTL_30_DAYS = 30 * 24 * 3600;
-const NOTE_TTL_TELEMETRY_AGENTS = new Set(['machines-monitor']);
-
-function defaultNoteTtlSeconds(note) {
-  return note && !note.expires_at && NOTE_TTL_TELEMETRY_AGENTS.has(note.agent)
-    ? NOTE_TTL_30_DAYS
-    : null;
-}
-
 function scalarString(value) {
   if (value === null || value === undefined) return '';
   if (typeof value === 'string') return value;
@@ -195,7 +186,6 @@ function createNoteEmbeddingOutbox(options) {
 
 module.exports = {
   NOTE_EMBEDDING_OUTBOX_KEY,
-  defaultNoteTtlSeconds,
   buildNoteEmbeddingPayload,
   createOutboxRecord,
   persistNoteWithOutbox,

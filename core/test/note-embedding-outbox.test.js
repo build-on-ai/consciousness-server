@@ -5,7 +5,6 @@ const assert = require('node:assert/strict');
 
 const {
   NOTE_EMBEDDING_OUTBOX_KEY,
-  defaultNoteTtlSeconds,
   buildNoteEmbeddingPayload,
   createOutboxRecord,
   persistNoteWithOutbox,
@@ -66,12 +65,6 @@ test('builds an idempotent notes upsert with scalar metadata only', () => {
     },
   });
   assert.ok(Object.values(payload.metadata).every(value => ['string', 'number', 'boolean'].includes(typeof value)));
-});
-
-test('retains knowledge notes and expires telemetry after 30 days', () => {
-  assert.equal(defaultNoteTtlSeconds({ agent: 'agent-a' }), null);
-  assert.equal(defaultNoteTtlSeconds({ agent: 'machines-monitor' }), 30 * 24 * 3600);
-  assert.equal(defaultNoteTtlSeconds({ agent: 'machines-monitor', expires_at: '2026-09-01T00:00:00Z' }), null);
 });
 
 test('uses safe scalar defaults when optional note metadata is absent', () => {

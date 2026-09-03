@@ -1,0 +1,60 @@
+{
+  "services": [
+    {
+      "name": "consciousness-server",
+      "target": "host_gateway",
+      "port_key": "consciousness-server",
+      "path": "/health",
+      "status": "active",
+      "description": "Core — tasks, notes, agents, skills, chat, memory, embedded WS"
+    },
+    {
+      "name": "semantic-search",
+      "target": "host_gateway",
+      "port_key": "semantic-search",
+      "path": "/health",
+      "status": "active",
+      "description": "Flask + ChromaDB; embeddings via Ollama"
+    },
+    {
+      "name": "machines-server",
+      "target": "host_gateway",
+      "port_key": "machines-server",
+      "path": "/health",
+      "status": "active",
+      "description": "Infrastructure awareness (machines, services, realtime telemetry)"
+    },
+    {
+      "name": "key-server",
+      "target": "host_gateway",
+      "port_key": "key-server",
+      "path": "/health",
+      "status": "active",
+      "description": "ed25519 signed-request verification, agent pub-key bootstrap"
+    },
+    {
+      "name": "test-runner",
+      "target": "host_gateway",
+      "port_key": "test-runner",
+      "path": "/health",
+      "status": "active",
+      "description": "On-demand test execution (pytest/npm/vitest) with async job tracking"
+    },
+    {
+      "name": "git-workflow",
+      "target": "host_gateway",
+      "port_key": "git-workflow",
+      "path": "/health",
+      "status": "active",
+      "description": "Post-commit hook receiver — records commits per agent into SQLite"
+    },
+    {
+      "name": "redis",
+      "target": "host_gateway",
+      "port_key": "redis",
+      "path": null,
+      "status": "external",
+      "description": "Shared storage + pub/sub (hard dependency of consciousness-server)"
+    }
+  ]
+}

@@ -105,6 +105,39 @@ def get_embedding(text: str):
         }
 
 
+def probe_ollama():
+    """Report whether the local Ollama answers, as a dependency of this block.
+
+    This block runs with network_mode: host, so it is the only one that can see
+    an Ollama bound to 127.0.0.1 — where it sits on almost every machine, and
+    where it should stay. Nothing is gained by exposing it to the network just
+    so a monitoring container can reach it; that container asks this endpoint
+    instead.
+
+    Returned as its own field, never folded into 'status'. The container can be
+    perfectly healthy while embedding is temporarily degraded, and a monitor
+    that cannot tell those apart teaches people to ignore red.
+    """
+    try:
+        r = requests.get(f'{OLLAMA_URL}/api/tags', timeout=2)
+    except requests.exceptions.RequestException:
+        return {'reachable': False, 'reason': 'unreachable', 'url': OLLAMA_URL}
+    if r.status_code != 200:
+        return {'reachable': False, 'reason': f'http_{r.status_code}', 'url': OLLAMA_URL}
+    try:
+        models = [m.get('name', '') for m in r.json().get('models', [])]
+    except ValueError:
+        return {'reachable': False, 'reason': 'bad_response', 'url': OLLAMA_URL}
+    have_model = any(m == EMBEDDING_MODEL or m.startswith(EMBEDDING_MODEL + ':')
+                     for m in models)
+    return {
+        'reachable': True,
+        'embedding_model_pulled': have_model,
+        'reason': None if have_model else 'embedding_model_missing',
+        'url': OLLAMA_URL,
+    }
+
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({
@@ -116,7 +149,8 @@ def health():
             'session_summaries': session_summaries_collection.count(),
             'notes': notes_collection.count()
         },
-        'embedding_model': EMBEDDING_MODEL
+        'embedding_model': EMBEDDING_MODEL,
+        'ollama': probe_ollama()
     })
 
 

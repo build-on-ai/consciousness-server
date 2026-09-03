@@ -59,22 +59,27 @@ func (c *Client) getJSON(ctx context.Context, url string, into any) error {
 
 type source struct {
 	Name string
+	// Slow marks data that changes rarely — the route catalogue, the graph,
+	// the identity cards. The core allows 60 requests a minute per identity,
+	// and asking for everything on every tick spent that budget in 26 seconds,
+	// after which the panel showed frozen data and blamed the server.
+	Slow bool
 	Get  func(context.Context, *Client) (func(*Snapshot), error)
 }
 
 var sources = []source{
-	{"health", func(ctx context.Context, c *Client) (func(*Snapshot), error) {
+	{"health", false, func(ctx context.Context, c *Client) (func(*Snapshot), error) {
 		var h Health
 		err := c.getJSON(ctx, c.CoreURL+"/health", &h)
 		return func(s *Snapshot) { s.Health = &h }, err
 	}},
-	{"agents", func(ctx context.Context, c *Client) (func(*Snapshot), error) {
+	{"agents", false, func(ctx context.Context, c *Client) (func(*Snapshot), error) {
 		var env agentsEnvelope
 		err := c.getJSON(ctx, c.CoreURL+"/api/agents", &env)
 		sort.Slice(env.Agents, func(i, j int) bool { return env.Agents[i].Name < env.Agents[j].Name })
 		return func(s *Snapshot) { s.Agents = env.Agents }, err
 	}},
-	{"tasks", func(ctx context.Context, c *Client) (func(*Snapshot), error) {
+	{"tasks", false, func(ctx context.Context, c *Client) (func(*Snapshot), error) {
 		var env tasksEnvelope
 		err := c.getJSON(ctx, c.CoreURL+"/api/tasks", &env)
 		sort.Slice(env.Tasks, func(i, j int) bool {
@@ -85,7 +90,7 @@ var sources = []source{
 		})
 		return func(s *Snapshot) { s.Tasks = env.Tasks }, err
 	}},
-	{"services", func(ctx context.Context, c *Client) (func(*Snapshot), error) {
+	{"services", false, func(ctx context.Context, c *Client) (func(*Snapshot), error) {
 		var env servicesEnvelope
 		err := c.getJSON(ctx, c.MachinesURL+"/api/services", &env)
 		list := make([]Service, 0, len(env.Services))
@@ -96,17 +101,17 @@ var sources = []source{
 		sort.Slice(list, func(i, j int) bool { return list[i].Port < list[j].Port })
 		return func(s *Snapshot) { s.Services = list }, err
 	}},
-	{"routes", func(ctx context.Context, c *Client) (func(*Snapshot), error) {
+	{"routes", true, func(ctx context.Context, c *Client) (func(*Snapshot), error) {
 		var cat RouteCatalogue
 		err := c.getJSON(ctx, c.CoreURL+"/api/_routes", &cat)
 		return func(s *Snapshot) { s.Routes = &cat }, err
 	}},
-	{"events", func(ctx context.Context, c *Client) (func(*Snapshot), error) {
+	{"events", true, func(ctx context.Context, c *Client) (func(*Snapshot), error) {
 		var st EventStats
 		err := c.getJSON(ctx, c.CoreURL+"/api/events/stats", &st)
 		return func(s *Snapshot) { s.Stats = &st }, err
 	}},
-	{"ws", func(ctx context.Context, c *Client) (func(*Snapshot), error) {
+	{"ws", false, func(ctx context.Context, c *Client) (func(*Snapshot), error) {
 		var env wsClientsEnvelope
 		err := c.getJSON(ctx, c.CoreURL+"/api/ws/clients", &env)
 		attached := map[string]bool{}
@@ -117,7 +122,7 @@ var sources = []source{
 		}
 		return func(s *Snapshot) { s.Attached = attached }, err
 	}},
-	{"cards", func(ctx context.Context, c *Client) (func(*Snapshot), error) {
+	{"cards", true, func(ctx context.Context, c *Client) (func(*Snapshot), error) {
 		var out struct {
 			Agents []string `json:"agents"`
 		}
@@ -128,7 +133,7 @@ var sources = []source{
 		}
 		return func(s *Snapshot) { s.CardNames = have }, err
 	}},
-	{"keys", func(ctx context.Context, c *Client) (func(*Snapshot), error) {
+	{"keys", false, func(ctx context.Context, c *Client) (func(*Snapshot), error) {
 		if c.KeysURL == "" {
 			return func(s *Snapshot) { s.KeyNames = nil }, nil
 		}
@@ -142,7 +147,7 @@ var sources = []source{
 		}
 		return func(s *Snapshot) { s.KeyNames = have }, err
 	}},
-	{"graph", func(ctx context.Context, c *Client) (func(*Snapshot), error) {
+	{"graph", true, func(ctx context.Context, c *Client) (func(*Snapshot), error) {
 		var g Graph
 		err := c.getJSON(ctx, c.CoreURL+"/api/graph", &g)
 		return func(s *Snapshot) { s.Graph = &g }, err
@@ -157,7 +162,9 @@ func SourceNames() []string {
 	return names
 }
 
-func (c *Client) Fetch(ctx context.Context) Snapshot {
+// Fetch queries the sources. withSlow includes the ones marked Slow; leaving
+// them out is what keeps a panel inside the core's per-identity request budget.
+func (c *Client) Fetch(ctx context.Context, withSlow bool) Snapshot {
 	now := time.Now()
 	snap := Snapshot{
 		At:      now,
@@ -169,6 +176,9 @@ func (c *Client) Fetch(ctx context.Context) Snapshot {
 	var wg sync.WaitGroup
 
 	for _, src := range sources {
+		if src.Slow && !withSlow {
+			continue
+		}
 		wg.Add(1)
 		go func(src source) {
 			defer wg.Done()

@@ -51,6 +51,11 @@ type Model struct {
 	lastFetch time.Time
 	fetching  bool
 
+	// How often the fast group is refreshed, and how many ticks have passed.
+	// The slow group rides every SlowEvery-th tick.
+	refresh time.Duration
+	ticks   int
+
 	streamState api.StreamState
 
 	cards *cardStore
@@ -71,11 +76,33 @@ type Model struct {
 	quitting bool
 }
 
+// MinRefresh is the shortest interval the panel accepts. Below it the fast
+// group alone outruns the core's 60-requests-a-minute budget, and the panel
+// spends its time being refused rather than showing anything.
+const MinRefresh = 6 * time.Second
+
+// DefaultRefresh is what the panel uses when nothing is given on the command
+// line: three fast sources every 6s plus four slow ones every 30s is about 38
+// requests a minute, comfortably inside the budget.
+const DefaultRefresh = 6 * time.Second
+
+// CoreRequestBudget is what core/server.js allows per identity per minute.
+// Named here so the panel can say why a refresh interval was refused.
+const CoreRequestBudget = 60
+
 func NewModel(c *api.Client, s *api.Stream) *Model {
+	return NewModelWithRefresh(c, s, DefaultRefresh)
+}
+
+func NewModelWithRefresh(c *api.Client, s *api.Stream, refresh time.Duration) *Model {
+	if refresh < MinRefresh {
+		refresh = MinRefresh
+	}
 	return &Model{
-		client: c,
-		stream: s,
-		cards:  newCardStore(),
+		client:  c,
+		stream:  s,
+		refresh: refresh,
+		cards:   newCardStore(),
 		panels: []Panel{
 			{Kind: PanelOverview},
 			{Kind: PanelAgents},
@@ -89,19 +116,25 @@ type tickMsg time.Time
 type eventMsg api.Event
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(m.fetchCmd(), tickCmd(), m.waitForEvent())
+	// Pierwszy przebieg bierze wszystko: panel ma byc pelny od razu.
+	return tea.Batch(m.fetchCmd(true), m.tickCmd(), m.waitForEvent())
 }
 
-func (m *Model) fetchCmd() tea.Cmd {
+func (m *Model) fetchCmd(withSlow bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		return snapshotMsg(m.client.Fetch(ctx))
+		return snapshotMsg(m.client.Fetch(ctx, withSlow))
 	}
 }
 
-func tickCmd() tea.Cmd {
-	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+// Every SlowEvery-th tick also refreshes the rarely-changing sources, so the
+// slow group runs at RefreshInterval*SlowEvery. Fetching all ten sources every
+// three seconds cost about 140 requests a minute against a limit of 60.
+const SlowEvery = 5
+
+func (m *Model) tickCmd() tea.Cmd {
+	return tea.Tick(m.refresh, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
 func (m *Model) waitForEvent() tea.Cmd {
@@ -126,9 +159,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streamState = m.stream.State()
 		if !m.fetching {
 			m.fetching = true
-			return m, tea.Batch(m.fetchCmd(), tickCmd())
+			m.ticks++
+			return m, tea.Batch(m.fetchCmd(m.ticks%SlowEvery == 0), m.tickCmd())
 		}
-		return m, tickCmd()
+		return m, m.tickCmd()
 
 	case snapshotMsg:
 		m.snap = api.Snapshot(msg)
@@ -287,7 +321,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		if !m.fetching {
 			m.fetching = true
-			return m, m.fetchCmd()
+			return m, m.fetchCmd(true)
 		}
 		return m, nil
 

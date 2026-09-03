@@ -11,10 +11,23 @@ PORTS_YAML="$REPO_ROOT/ports.yaml"
 GRN=$'\033[0;32m'; YEL=$'\033[0;33m'; RED=$'\033[0;31m'; RST=$'\033[0m'
 
 MODE="mint"
+EXTRA_CLIENT=""
 case "${1-}" in
   "")           MODE="mint" ;;
   --check)      MODE="check" ;;
   --register)   MODE="register" ;;
+  --client)
+    MODE="mint"
+    EXTRA_CLIENT="${2-}"
+    if [ -z "$EXTRA_CLIENT" ]; then
+      echo "bootstrap-keys: --client needs a name, e.g. --client TUI-HP" >&2
+      exit 2
+    fi
+    case "$EXTRA_CLIENT" in
+      *[!A-Za-z0-9_-]*)
+        echo "bootstrap-keys: client name may hold letters, digits, - and _ only: $EXTRA_CLIENT" >&2
+        exit 2 ;;
+    esac ;;
   *) printf 'bootstrap-keys: unknown argument: %s\n' "$1" >&2; exit 2 ;;
 esac
 
@@ -29,7 +42,15 @@ blocks() {
   echo "cs-core"
 }
 
-clients() { printf 'TUI\nstatus-collector\n'; }
+# One panel per machine, each with its own key: the core counts requests per
+# identity, so five panels signing as TUI share one budget and all five start
+# getting refused. Separate identities also make the audit log answer which
+# machine read what, which a shared name cannot.
+clients() {
+  printf 'TUI\nstatus-collector\n'
+  [ -n "$EXTRA_CLIENT" ] && printf '%s\n' "$EXTRA_CLIENT"
+  return 0
+}
 
 all_identities() { { roles; blocks; clients; } | awk 'NF' | sort -u; }
 

@@ -14,7 +14,7 @@ COPY lib/ports.py lib/sign_outbound.py lib/verify_signed.py ./middleware/
 ENV PORT=3038 \
     CS_URL=http://consciousness-server:3032 \
     MACHINES_DIR=/data/machines \
-    SERVICES_YAML=/data/services.yaml
+    SERVICES_RESOLVED=/data/services.resolved.json
 
 EXPOSE 3038
 

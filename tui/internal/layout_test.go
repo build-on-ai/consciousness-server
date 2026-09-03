@@ -39,7 +39,7 @@ func TestViewAlwaysFillsExactlyTheTerminal(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			updated, _ = m.Update(snapshotMsg(c.Fetch(ctx)))
+			updated, _ = m.Update(snapshotMsg(c.Fetch(ctx, true)))
 			m = updated.(*Model)
 
 			out := m.View().Content

@@ -24,8 +24,23 @@ func main() {
 	keys := flag.String("keys", envOr("BOA_KEYS", ports.URL("key-server", fallbackKeys)), "key-server base URL; empty means this deployment has none")
 	name := flag.String("as", envOr("BOA_AGENT", "TUI"), "identity used on the WebSocket and when signing")
 	keyPath := flag.String("key", envOr("BOA_SIGNING_KEY", ""), "path to an OpenSSH ed25519 private key; the panel does not start without one")
+	refresh := flag.Duration("refresh", internal.DefaultRefresh,
+		"how often the fast sources are refreshed; the slow ones ride every fifth tick")
 	version := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	// Odrzucane, nie milczaco podnoszone: operator, ktory prosi o 1s, ma
+	// wiedziec, ze rdzen odmowi po kilkunastu sekundach, zamiast zobaczyc
+	// zamrozony panel i uznac to za awarie serwera.
+	if *refresh < internal.MinRefresh {
+		fmt.Fprintf(os.Stderr,
+			"%s: --refresh %s is below the %s floor.\n\n"+
+				"Every request is signed and counted against a per-identity budget of\n"+
+				"%d a minute in the core. Refreshing faster spends it on repetition and\n"+
+				"the panel starts showing refusals instead of data.\n",
+			os.Args[0], *refresh, internal.MinRefresh, internal.CoreRequestBudget)
+		os.Exit(2)
+	}
 
 	if *version {
 		fmt.Println("boa 0.1.0")
@@ -75,7 +90,7 @@ decyzją operatora.
 	stream := api.NewStream(client)
 	go stream.Run(*name)
 
-	model := internal.NewModel(client, stream)
+	model := internal.NewModelWithRefresh(client, stream, *refresh)
 
 	p := tea.NewProgram(model)
 	if _, err := p.Run(); err != nil {

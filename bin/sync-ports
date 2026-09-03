@@ -5,6 +5,8 @@ set -u
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PORTS_YAML="$REPO_ROOT/ports.yaml"
 ENV_FILE="$REPO_ROOT/deploy/.env"
+SERVICES_SRC="$REPO_ROOT/services.json"
+SERVICES_OUT="$REPO_ROOT/deploy/services.resolved.json"
 
 MODE="${1:-write}"
 case "$MODE" in
@@ -45,6 +47,78 @@ if [ -z "$generated" ]; then
   exit 1
 fi
 
+# services.resolved.json — services.json with port_key swapped for the number
+# ports.yaml gives it. Awk reads both files: the first pass builds the port
+# map, the second rewrites each entry. One field per line in services.json is
+# the whole grammar this needs; anything fancier is rejected loudly rather
+# than silently half-parsed.
+resolve_services() {
+  awk -v src="$SERVICES_SRC" '
+    BEGIN { pass = 1 }
+    FILENAME == ARGV[1] {
+      sub(/#.*$/, "")
+      if ($0 ~ /^[A-Za-z][A-Za-z0-9_-]*:[[:space:]]*$/) {
+        key = $1; sub(/:$/, "", key)
+        in_ports = (key == "ports")
+        next
+      }
+      if (in_ports && $0 ~ /^[[:space:]]+[A-Za-z][A-Za-z0-9_-]*:[[:space:]]+[0-9]+/) {
+        key = $1; sub(/:$/, "", key)
+        portof[key] = $2
+      }
+      next
+    }
+    {
+      line = $0
+      if (line ~ /^[[:space:]]*\{[[:space:]]*$/) { delete f; n_fields = 0; next }
+      if (line ~ /^[[:space:]]*\}/) {
+        if (n_fields == 0) next
+        if (!(f["port_key"] in portof)) {
+          printf "sync-ports: services.json names port_key \"%s\" (service \"%s\"), which ports.yaml does not define\n", f["port_key"], f["name"] > "/dev/stderr"
+          exit 3
+        }
+        if (out_count++) printf ",\n"
+        printf "    {\n"
+        printf "      \"name\": \"%s\",\n", f["name"]
+        printf "      \"target\": \"%s\",\n", f["target"]
+        printf "      \"port\": %s,\n", portof[f["port_key"]]
+        printf "      \"port_key\": \"%s\",\n", f["port_key"]
+        if (f["path"] == "null") printf "      \"path\": null,\n"
+        else printf "      \"path\": \"%s\",\n", f["path"]
+        printf "      \"status\": \"%s\",\n", f["status"]
+        printf "      \"description\": \"%s\"\n", f["description"]
+        printf "    }"
+        delete f; n_fields = 0
+        next
+      }
+      if (match(line, /^[[:space:]]*"[a-z_]+"[[:space:]]*:/)) {
+        key = line
+        sub(/^[[:space:]]*"/, "", key); sub(/"[[:space:]]*:.*$/, "", key)
+        val = line
+        sub(/^[^:]*:[[:space:]]*/, "", val)
+        sub(/,[[:space:]]*$/, "", val)
+        gsub(/^"|"$/, "", val)
+        f[key] = val; n_fields++
+      }
+    }
+    END {
+      if (out_count == 0) {
+        print "sync-ports: no services found in services.json" > "/dev/stderr"
+        exit 3
+      }
+      printf "\n  ]\n}\n"
+    }
+  ' "$PORTS_YAML" "$SERVICES_SRC"
+}
+
+services_body=""
+if [ -f "$SERVICES_SRC" ]; then
+  header=$(printf '{\n  "_generated_by": "bin/sync-ports from services.json + ports.yaml — do not edit",\n  "services": [\n')
+  body=$(resolve_services) || exit $?
+  services_body="${header}${body}"
+fi
+
+
 case "$MODE" in
   print)
     printf '%s\n' "$generated"
@@ -60,7 +134,18 @@ case "$MODE" in
       diff <(printf '%s\n' "$current") <(printf '%s\n' "$generated") || true
       exit 1
     fi
-    echo "sync-ports --check: $ENV_FILE in sync"
+    if [ -f "$SERVICES_SRC" ]; then
+      if [ ! -f "$SERVICES_OUT" ]; then
+        echo "sync-ports: $SERVICES_OUT missing — run bin/sync-ports to create" >&2
+        exit 1
+      fi
+      if ! printf '%s\n' "$services_body" | diff -q - "$SERVICES_OUT" >/dev/null; then
+        echo "sync-ports --check: $SERVICES_OUT drift from services.json or ports.yaml" >&2
+        diff <(printf '%s\n' "$services_body") "$SERVICES_OUT" || true
+        exit 1
+      fi
+    fi
+    echo "sync-ports --check: deploy/.env and services.resolved.json in sync"
     exit 0 ;;
 esac
 
@@ -94,3 +179,9 @@ fi
 
 count=$(printf '%s\n' "$generated" | wc -l)
 echo "sync-ports: wrote $count PORT_* lines to $ENV_FILE"
+
+if [ -n "$services_body" ]; then
+  printf '%s\n' "$services_body" > "$SERVICES_OUT"
+  svc_count=$(grep -c '"port_key"' "$SERVICES_OUT")
+  echo "sync-ports: resolved $svc_count services to $SERVICES_OUT"
+fi

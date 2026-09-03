@@ -32,7 +32,7 @@ func TestWalkthrough(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	m = send(m, snapshotMsg(c.Fetch(ctx)))
+	m = send(m, snapshotMsg(c.Fetch(ctx, true)))
 	time.Sleep(1200 * time.Millisecond)
 	m = send(m, tickMsg(time.Now()))
 

@@ -1,85 +1,82 @@
 'use strict';
 
 const { test } = require('node:test');
-const assert = require('node:assert');
-const { parseServices, loadServices } = require('../services-registry');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
-const PRZYKLAD = `
-services:
-  - name: consciousness
-    host: consciousness-server
-    port: 3032
-    path: /health
-    description: Core
-    status: active
+const { loadServices, parseServices, ARTEFACT } = require('../services-registry');
 
-  - name: ollama
-    host: host.docker.internal
-    port: 11434
-    path: /api/tags
-    description: Local inference
-    status: external
-`;
+const PRZYKLAD = JSON.stringify({
+  services: [
+    { name: 'consciousness-server', target: 'host_gateway', port: 13032,
+      port_key: 'consciousness-server', path: '/health', status: 'active' },
+    { name: 'redis', target: 'host_gateway', port: 16380,
+      port_key: 'redis', path: null, status: 'external' },
+  ],
+});
 
 test('czyta kazda usluge z rejestru', () => {
-  const s = parseServices(PRZYKLAD);
-  assert.strictEqual(s.length, 2);
-  assert.strictEqual(s[0].name, 'consciousness');
-  assert.strictEqual(s[1].name, 'ollama');
+  const uslugi = parseServices(PRZYKLAD);
+  assert.equal(uslugi.length, 2);
+  assert.deepEqual(uslugi.map(u => u.name), ['consciousness-server', 'redis']);
 });
 
 test('port jest liczba, nie napisem', () => {
-  const s = parseServices(PRZYKLAD);
-  assert.strictEqual(s[0].port, 3032);
-  assert.strictEqual(typeof s[0].port, 'number');
+  const [pierwsza] = parseServices(PRZYKLAD);
+  assert.equal(typeof pierwsza.port, 'number');
+  assert.equal(pierwsza.port, 13032);
 });
 
 test('status rozroznia active od external', () => {
-  const s = parseServices(PRZYKLAD);
-  assert.strictEqual(s.filter(x => x.status === 'active').length, 1);
+  const uslugi = parseServices(PRZYKLAD);
+  assert.equal(uslugi.find(u => u.name === 'consciousness-server').status, 'active');
+  assert.equal(uslugi.find(u => u.name === 'redis').status, 'external');
 });
 
-test('nowa usluga w rejestrze pojawia sie bez zmiany kodu', () => {
-  const rozszerzony = PRZYKLAD + `
-  - name: nowa-usluga
-    host: nowa
-    port: 9999
-    path: /health
-    description: Dodana tylko w pliku
-    status: active
-`;
-  const s = parseServices(rozszerzony);
-  const nowa = s.find(x => x.name === 'nowa-usluga');
-  assert.ok(nowa, 'usluga dopisana do rejestru musi byc widoczna');
-  assert.strictEqual(nowa.port, 9999);
-  assert.strictEqual(s.filter(x => x.status === 'active').length, 2);
+test('brak rozwiazanego portu jest bledem, nie cicha luka', () => {
+  const bezPortu = JSON.stringify({ services: [{ name: 'x', port_key: 'x' }] });
+  assert.throws(() => parseServices(bezPortu), /has no resolved port/);
 });
 
-test('komentarze i puste linie nie tworza wpisow', () => {
-  const s = parseServices(`
-services:
-  # to jest komentarz
-  - name: jedna
-    port: 1
-
-`);
-  assert.strictEqual(s.length, 1);
-  assert.strictEqual(s[0].name, 'jedna');
+test('brak tablicy services jest bledem', () => {
+  assert.throws(() => parseServices('{}'), /expected a "services" array/);
 });
 
-test('brak pliku daje pusta liste zamiast wyjatku', () => {
-  const stary = process.env.SERVICES_YAML;
-  process.env.SERVICES_YAML = '/nie/istnieje/services.yaml';
+// Pusta lista czytalaby sie jak "nie ma czego sprawdzac", czyli jak zdrowy
+// stos bez uslug. Brak artefaktu ma zatrzymac start, nie udawac porzadku.
+test('brak artefaktu zatrzymuje start zamiast dawac pusta liste', () => {
+  const pusty = fs.mkdtempSync(path.join(os.tmpdir(), 'registry-'));
+  const bylo = process.env.SERVICES_RESOLVED;
+  process.env.SERVICES_RESOLVED = path.join(pusty, 'nie-ma.json');
   try {
-    assert.deepStrictEqual(loadServices(), []);
+    assert.throws(() => loadServices(), /ENOENT|not found/);
   } finally {
-    if (stary === undefined) delete process.env.SERVICES_YAML;
-    else process.env.SERVICES_YAML = stary;
+    if (bylo === undefined) delete process.env.SERVICES_RESOLVED;
+    else process.env.SERVICES_RESOLVED = bylo;
+    fs.rmSync(pusty, { recursive: true, force: true });
   }
 });
 
-test('rejestr z repozytorium wczytuje sie i ma consciousness', () => {
-  const s = loadServices();
-  assert.ok(s.length > 0, 'services.yaml musi dac sie wczytac');
-  assert.ok(s.some(x => x.name === 'consciousness'));
+test('rejestr z repozytorium wczytuje sie i ma consciousness-server', () => {
+  const uslugi = loadServices();
+  assert.ok(uslugi.length > 0, `${ARTEFACT} nie zawiera zadnej uslugi`);
+  const core = uslugi.find(u => u.name === 'consciousness-server');
+  assert.ok(core, 'brak wpisu consciousness-server');
+  assert.equal(typeof core.port, 'number');
+});
+
+// Numer portu ma jedno zrodlo: ports.yaml. Ten test lapie rozjazd, ktory na HP
+// kazal monitoringowi pytac semantic-search o 3037, gdy uslugа byla na 13037.
+test('kazdy port w artefakcie pochodzi z ports.yaml', () => {
+  const portsYaml = fs.readFileSync(path.join(__dirname, '..', '..', 'ports.yaml'), 'utf8');
+  const zYaml = {};
+  for (const [, nazwa, port] of portsYaml.matchAll(/^\s+([a-z][a-z0-9-]*):\s+(\d+)/gm)) {
+    zYaml[nazwa] = Number(port);
+  }
+  for (const usluga of loadServices()) {
+    assert.equal(usluga.port, zYaml[usluga.port_key],
+      `${usluga.name}: port ${usluga.port} nie zgadza sie z ports.yaml (${zYaml[usluga.port_key]})`);
+  }
 });

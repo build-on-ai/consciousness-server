@@ -203,18 +203,32 @@ def mcp_call():
 
 import socket
 import http.client
+import json as _json
 
-SERVICES_YAML = os.getenv('SERVICES_YAML', os.path.join(_ROOT_DIR, 'services.yaml'))
+# The artefact bin/sync-ports builds from services.json and ports.yaml. Reading
+# the generated file rather than the source means this block and the core see
+# the same ports through their standard libraries, with no YAML parser of their
+# own to disagree about.
+SERVICES_RESOLVED = os.getenv(
+    'SERVICES_RESOLVED', os.path.join(_ROOT_DIR, 'deploy', 'services.resolved.json'))
 
 def load_services_config():
-    """Load services to check from YAML config."""
-    try:
-        with open(SERVICES_YAML, 'r') as f:
-            config = yaml.safe_load(f)
-            return config.get('services', [])
-    except Exception as e:
-        print(f"[services] could not read {SERVICES_YAML}: {e}")
-        return []
+    """Load the resolved service registry. Raises when it is missing.
+
+    An unreadable registry used to return an empty list silently. An empty list
+    is indistinguishable from a healthy stack with nothing in it, so the failure
+    has no symptom to notice.
+    """
+    with open(SERVICES_RESOLVED, 'r') as f:
+        config = _json.load(f)
+    services = config.get('services')
+    if not isinstance(services, list):
+        raise ValueError(f"{SERVICES_RESOLVED}: expected a 'services' array")
+    for svc in services:
+        if not isinstance(svc.get('port'), int):
+            raise ValueError(
+                f"{SERVICES_RESOLVED}: service {svc.get('name')!r} has no resolved port")
+    return services
 
 def _get_from_core(path, timeout=5):
     """The only path from this block to the core, so no call site can forget to sign.
@@ -229,12 +243,23 @@ def _get_from_core(path, timeout=5):
 
 
 def check_service_status(service):
-    """Checks whether a service answers.
+    """Check if a service is responding.
 
-    Host comes from SERVICES_HOST, then the entry's own `host`, then localhost;
-    an entry with `path: null` speaks no HTTP and gets a plain TCP connect.
+    Every service is reached the same way: through the host gateway, at the
+    port ports.yaml publishes. One frame of reference means a block running
+    with network_mode: host needs no special case, and no entry can name a
+    port belonging to a different address space — which is how the checker
+    asked semantic-search about 3037 while it answered on 13037.
+
+    SERVICES_HOST overrides the gateway for running this checker on the host
+    itself. Hardcoding localhost here meant the checker inside a container
+    probed *itself* for every entry and reported one service alive out of
+    eight — the containers were fine, the question was wrong.
+
+    A service with `path: null` does not speak HTTP. Probing it with a GET
+    can only ever look like death, so those get a plain TCP connect.
     """
-    host = os.environ.get('SERVICES_HOST') or service.get('host') or 'localhost'
+    host = os.environ.get('SERVICES_HOST') or 'host.docker.internal'
     path = service.get('path')
 
     if not path:
@@ -248,25 +273,61 @@ def check_service_status(service):
         conn = http.client.HTTPConnection(host, service['port'], timeout=2)
         conn.request('GET', path)
         response = conn.getresponse()
+        body = response.read(8192)
         conn.close()
-        if response.status < 500:
-            return 'active'
-        return 'inactive'
+        # Accept 200-499 as "active" (including WebSocket upgrades, redirects, etc.)
+        if response.status >= 500:
+            return 'inactive'
+        return ('active', body)
     except Exception:
         return 'inactive'
+
+
+def _dependencies_from(body):
+    """Pull a block's own dependency report out of its /health answer.
+
+    semantic-search runs with network_mode: host and is the only block that can
+    see an Ollama bound to 127.0.0.1. It reports that in its /health, and this
+    is where the report is picked up — so nothing here has to reach a service
+    that is deliberately not on the network.
+    """
+    if not body:
+        return None
+    try:
+        payload = _json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    deps = {}
+    for name in ('ollama',):
+        if name in payload:
+            deps[name] = payload[name]
+    return deps or None
 
 def get_services_with_status():
     """Load services from config and check their status dynamically."""
     services = load_services_config()
     result = {}
     for svc in services:
-        status = check_service_status(svc)
-        result[svc['name']] = {
+        probed = check_service_status(svc)
+        if isinstance(probed, tuple):
+            status, body = probed
+        else:
+            status, body = probed, None
+        entry = {
             'port': svc['port'],
             'path': svc.get('path', '/health'),
             'description': svc.get('description', ''),
             'status': status
         }
+        # A block's own dependencies travel with it rather than as separate
+        # rows: Ollama is not a service of this stack and probing it from a
+        # container could only ever fail, however healthy it is on the host.
+        deps = _dependencies_from(body)
+        if deps:
+            entry['dependencies'] = deps
+        result[svc['name']] = entry
     return result
 
 @app.route('/', methods=['GET'])

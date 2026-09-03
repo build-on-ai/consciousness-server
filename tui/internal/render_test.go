@@ -22,7 +22,7 @@ func TestRenderSurvivesDeadSources(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	updated, _ = m.Update(snapshotMsg(c.Fetch(ctx)))
+	updated, _ = m.Update(snapshotMsg(c.Fetch(ctx, true)))
 	m = updated.(*Model)
 
 	out := m.View().Content
@@ -99,7 +99,7 @@ func TestPreview(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	updated, _ = m.Update(snapshotMsg(c.Fetch(ctx)))
+	updated, _ = m.Update(snapshotMsg(c.Fetch(ctx, true)))
 	m = updated.(*Model)
 
 	time.Sleep(1500 * time.Millisecond)

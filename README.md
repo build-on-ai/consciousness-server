@@ -19,8 +19,9 @@ that turns verification off.
 | `tui/` | Go | Terminal interface over the API. |
 | `clients/mcp-buildonai/` | TypeScript | MCP client. |
 
-`ports.yaml` assigns ports. `services.yaml` is the service registry — `/api/services`
-reads it at request time, so adding a service there needs no code change.
+`ports.yaml` assigns ports and nothing restates them: `services.json` names the
+key to look up, and `bin/sync-ports` resolves the two into
+`deploy/services.resolved.json`, which is what the blocks read.
 `agents/*.md` are A2A role cards and `skills/*.md` skill definitions; the core
 loads both at startup. Both ship as `_example` / `-example` files: they are
 working defaults meant to be replaced with your own.
@@ -41,7 +42,23 @@ Running the stack writes into the checkout: `deploy/keys/`, `deploy/.env`,
 `deploy/volumes/` and `node_modules/`. Work on a copy if you want the checkout
 to stay clean.
 
-### 1. Mint the signing keys — from the checkout root
+### 1. Resolve the ports — from the checkout root
+
+`ports.yaml` owns every port. This turns it into the two files the stack reads:
+`deploy/.env` for Compose and `deploy/services.resolved.json` for the blocks.
+
+```console
+~/cs$ bin/sync-ports
+sync-ports: wrote 10 PORT_* lines to deploy/.env
+sync-ports: resolved 7 services to deploy/services.resolved.json
+```
+
+Not optional. Compose carries no fallback port numbers, so a stack started
+without `deploy/.env` stops with the variable named instead of quietly using a
+number that lives in `ports.yaml` anyway. `bin/sync-ports --check` reports drift
+in either artefact.
+
+### 2. Mint the signing keys — from the checkout root
 
 Without keys every call is refused, by design.
 
@@ -63,7 +80,7 @@ Key-server access:
 Private keys land in `deploy/keys/`, public keys in `key-server/keys/agents/`.
 Neither directory is committed.
 
-### 2. Install the CLI dependency — from the checkout root
+### 3. Install the CLI dependency — from the checkout root
 
 `bin/sign-request`, `bin/cs-curl` and `bin/test-endpoints` sign through `sshpk`,
 which lives in the key-server package. One command, once:
@@ -75,7 +92,7 @@ added 17 packages in 636ms
 
 Skip this and the tools stop with `sshpk not found in .../key-server/node_modules`.
 
-### 3. Start the stack — from `deploy/`
+### 4. Start the stack — from `deploy/`
 
 ```console
 ~/cs$ cd deploy
@@ -99,7 +116,7 @@ Skip this and the tools stop with `sshpk not found in .../key-server/node_module
 Use `--build` on the first run and after pulling changes. Without it Docker
 reuses whatever image is cached, which can be older than the checkout.
 
-### 4. Check that it is up — from `deploy/`
+### 5. Check that it is up — from `deploy/`
 
 ```console
 ~/cs/deploy$ docker compose ps --format 'table {{.Name}}\t{{.Status}}'
@@ -124,7 +141,7 @@ cs-test-runner       Up About a minute (healthy)
 `status` is `degraded` rather than `ok` while a dependency is missing; the body
 names which one.
 
-### 5. Check every endpoint — back at the checkout root
+### 6. Check every endpoint — back at the checkout root
 
 ```console
 ~/cs/deploy$ cd ..
@@ -199,27 +216,28 @@ The wire format and the replay window are in
 
 ## Adding a service
 
-`/api/services` reads `services.yaml` on each request. Append an entry and the
-API reports it immediately — no restart, no code change:
+Add the port to `ports.yaml`, the entry to `services.json`, and re-run
+`bin/sync-ports`. The entry names a key, never a number, so the two files
+cannot drift apart:
 
 ```console
-$ cat >> services.yaml <<'YAML'
-
-  - name: przyklad-nowa-usluga
-    host: nowa
-    port: 9999
-    path: /health
-    description: Dopisana tylko do rejestru
-    status: active
-YAML
+$ bin/sync-ports
+sync-ports: wrote 11 PORT_* lines to deploy/.env
+sync-ports: resolved 8 services to deploy/services.resolved.json
 
 $ bin/cs-curl -a TUI GET /api/services
-... "inactive":{"przyklad-nowa-usluga":{"host":"nowa","port":9999,
+... "inactive":{"przyklad-nowa-usluga":{"port":13099,
 "description":"Dopisana tylko do rejestru","status":"timeout"}}
 ```
 
-It lands under `inactive` with `status: timeout` because nothing answers on that
-host — the probe ran against the new entry straight away.
+It lands under `inactive` with `status: timeout` because nothing answers there
+yet — the probe ran against the new entry straight away. A `port_key` with no
+match in `ports.yaml` stops `sync-ports` with both names printed, rather than
+resolving to nothing.
+
+Every service is probed through the host gateway at its published port. One
+frame of reference means a block running with `network_mode: host` needs no
+special case, and no entry can name a port from a different address space.
 
 ## Tests
 

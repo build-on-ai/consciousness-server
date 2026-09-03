@@ -376,7 +376,7 @@ func (servicesPanel) Explain() Doc {
 			Title: "ZAKRES I ŹRÓDŁO",
 			Lines: []string{
 				"Wpisy z machines-server /api/services, posortowane po porcie.",
-				"Rejestr pochodzi z services.yaml, a stan każdej pozycji jest",
+				"Rejestr pochodzi z services.json, a stan każdej pozycji jest",
 				"liczony na nowo przy każdym żądaniu — pole status w pliku nie",
 				"jest tym, co widać na ekranie.",
 			},
@@ -404,7 +404,7 @@ func (servicesPanel) Explain() Doc {
 				"sondy — typ przekazywany do panelu ma tylko nazwę, port, ścieżkę,",
 				"opis i stan.",
 				"",
-				"Nieczytelny services.yaml machines-server zamienia na pustą listę",
+				"Nieczytelny rejestr machines-server zamienia na pustą listę",
 				"i odpowiada 200. Panel pokaże wtedy pusty rejestr, nie błąd pliku.",
 				"",
 				"Adresy sond opisują widok Z WNĘTRZA sieci kontenerów. Sonda",

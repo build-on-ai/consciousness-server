@@ -203,10 +203,12 @@ X-Signature: PzKYvbPPnL8LR3FmvrlgD7HsFmvNOIcaDJou2YvwaGxsdSY+lJJ3LMIjQ4xDGfJoxOT
 ```console
 $ bin/cs-curl -a TUI GET /api/services
 
-{"services":{"consciousness":{"host":"consciousness-server","port":3032,
-"path":"/health","description":"Core — tasks, notes, agents, skills, chat,
-memory, embedded WS","status":"active"}, ...},"inactive":{},
-"checked_at":"2026-09-01T21:03:29.886Z"}
+{"services":{"consciousness-server":{"port":13032,"path":"/health",
+"description":"Core — tasks, notes, agents, skills, chat, memory, embedded WS",
+"status":"active"},"semantic-search":{"port":13037,"path":"/health",
+"description":"Flask + ChromaDB; embeddings via Ollama","status":"active",
+"dependencies":{"ollama":{"reachable":true,"embedding_model_pulled":true}}},
+...},"inactive":{},"checked_at":"2026-09-03T21:03:29.886Z"}
 ```
 
 The wire format and the replay window are in

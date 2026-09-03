@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "node tests/cidr.test.js && node test/smoke.js"
+    "test": "node tests/cidr.test.js && node tests/host-allowlist.test.js && node test/smoke.js"
   },
   "dependencies": {
     "redis": "^5.12.1",

@@ -338,7 +338,7 @@ func (d serviceRow) Explain() Doc {
 				"",
 				"Kodu HTTP, czasu odpowiedzi, treści błędu ani momentu sondy.",
 				"Stan jest liczony na nowo przy każdym żądaniu, więc pole status",
-				"wpisane w services.yaml nie ma z tym wynikiem nic wspólnego.",
+				"wpisane w rejestrze nie ma z tym wynikiem nic wspólnego.",
 			},
 		}},
 	}

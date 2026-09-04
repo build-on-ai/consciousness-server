@@ -67,8 +67,8 @@ test('rejestr z repozytorium wczytuje sie i ma consciousness-server', () => {
   assert.equal(typeof core.port, 'number');
 });
 
-// Numer portu ma jedno zrodlo: ports.yaml. Ten test lapie rozjazd, ktory na HP
-// kazal monitoringowi pytac semantic-search o 3037, gdy uslugа byla na 13037.
+// Numer portu ma jedno zrodlo: ports.yaml. Artefakt tylko go przepisuje,
+// wiec kazda wartosc w nim musi sie tam znalezc.
 test('kazdy port w artefakcie pochodzi z ports.yaml', () => {
   const portsYaml = fs.readFileSync(path.join(__dirname, '..', '..', 'ports.yaml'), 'utf8');
   const zYaml = {};

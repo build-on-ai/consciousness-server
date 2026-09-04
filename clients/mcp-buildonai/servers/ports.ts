@@ -1,9 +1,7 @@
 // Ports come from ports.yaml, the same file lib/ports.{js,py} and the TUI read.
 //
-// This client runs on the host, not in the compose network, so it must use the
-// published ports (13032, 13037), not the container-internal ones. Writing
-// 3032 here meant a fresh deployment answered on 13032 while the client knocked
-// on a port nothing had opened.
+// This client runs on the host, not in the compose network, so it reads the
+// published ports, not the container-internal ones.
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";

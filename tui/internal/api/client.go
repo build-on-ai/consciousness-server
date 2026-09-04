@@ -61,8 +61,7 @@ type source struct {
 	Name string
 	// Slow marks data that changes rarely — the route catalogue, the graph,
 	// the identity cards. The core allows 60 requests a minute per identity,
-	// and asking for everything on every tick spent that budget in 26 seconds,
-	// after which the panel showed frozen data and blamed the server.
+	// so these are fetched every SlowEvery-th tick rather than on each one.
 	Slow bool
 	Get  func(context.Context, *Client) (func(*Snapshot), error)
 }

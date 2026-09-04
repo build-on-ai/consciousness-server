@@ -25,12 +25,8 @@ func liczoneDoLimitu(t *testing.T) (szybkie, wolne int) {
 	return
 }
 
-// Panel odswiezal wszystkie zrodla co 3 sekundy, czyli okolo 140 zapytan na
-// minute przy limicie 60. Rdzen odmawial po jakichs 26 sekundach, a panel
-// pokazywal zamrozone dane i wygladalo to na awarie serwera.
-//
-// Ten test wiaze tempo panelu z limitem rdzenia: dolozenie zrodla albo
-// przyspieszenie odswiezania zapala sie tutaj, nie po 26 sekundach na maszynie.
+// Tempo odswiezania panelu musi sie miescic w limicie rdzenia na tozsamosc.
+// Test sprawdza ten warunek przy zmianie liczby zrodel albo interwalu.
 func TestBudzetZapytanMiesciSieWLimicie(t *testing.T) {
 	const (
 		limitNaMinute = 60 // core/server.js: max_requests_per_minute
@@ -53,8 +49,8 @@ func TestBudzetZapytanMiesciSieWLimicie(t *testing.T) {
 	}
 }
 
-// Bez rozdzielenia grup panel wraca do stanu sprzed poprawki. Ten test pilnuje,
-// ze podzial w ogole istnieje, a nie tylko ze liczby sie zgadzaja.
+// Wyliczenie budzetu ma sens tylko wtedy, gdy podzial na grupy istnieje.
+// Test sprawdza sam podzial, nie zgodnosc liczb.
 func TestWolneZrodlaSaOznaczone(t *testing.T) {
 	oczekiwaneWolne := map[string]bool{
 		"routes": true, "graph": true, "cards": true, "events": true,

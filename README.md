@@ -42,6 +42,25 @@ Running the stack writes into the checkout: `deploy/keys/`, `deploy/.env`,
 `deploy/volumes/` and `node_modules/`. Work on a copy if you want the checkout
 to stay clean.
 
+### 0. Clone with the key-server submodule
+
+`key-server/` is a submodule pinned to a commit of
+[build-on-ai/buildonai-key-server](https://github.com/build-on-ai/buildonai-key-server),
+so the thing that verifies every signature has one source rather than a copy
+per repository.
+
+```console
+$ git clone --recurse-submodules https://github.com/build-on-ai/consciousness-server.git
+```
+
+Already cloned without it? `git submodule update --init` fills the directory.
+An empty `key-server/` is what a plain `git clone` leaves behind, and the stack
+will fail to build with no obvious reason.
+
+The pin is to a commit, not to a branch: a fix lands in the key-server
+repository first, and this pointer moves only when someone updates it here and
+the tests pass.
+
 ### 1. Resolve the ports — from the checkout root
 
 `ports.yaml` owns every port. This turns it into the two files the stack reads:

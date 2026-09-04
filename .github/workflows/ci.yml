@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  submodule:
+    name: key-server submodule
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      # The pin is the point: this job fails if key-server/ arrives empty
+      # (cloned without --recurse-submodules) or if the pointer was moved
+      # without the tests below being run against what it now points at.
+      - name: Submodule is present and pinned
+        run: |
+          test -f key-server/server.js || {
+            echo "key-server/ is empty — the submodule was not checked out" >&2
+            exit 1
+          }
+          git submodule status | sed 's/^/  /'
+          test -z "$(git submodule status | grep '^+')" || {
+            echo "submodule pointer does not match the checked-out commit" >&2
+            exit 1
+          }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: key-server tests, from the pinned commit
+        working-directory: key-server
+        run: |
+          npm ci --no-audit --no-fund
+          node tests/cidr.test.js
+          node tests/host-allowlist.test.js
+
+      - name: Deployment matches what the pinned key-server accepts
+        run: node deploy/tests/key-server-hosts.test.js
+
+  core:
+    name: core and registry
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Ports and services resolve from one source
+        run: |
+          bin/sync-ports
+          bin/sync-ports --check
+
+      - name: Middleware copies match their master
+        run: bin/sync-middleware --check
+
+      - name: Core tests
+        working-directory: core
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+
+      - name: Compose refuses to start without the generated .env
+        run: |
+          mv deploy/.env /tmp/env.bak
+          if (cd deploy && docker compose config >/dev/null 2>&1); then
+            echo "compose accepted a stack with no deploy/.env" >&2
+            exit 1
+          fi
+          mv /tmp/env.bak deploy/.env
+          (cd deploy && docker compose config >/dev/null)

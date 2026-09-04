@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-only
-// Test allowlisty naglowka Host. Uruchomienie: node key-server/tests/host-allowlist.test.js
+// Sprawdza, ze compose tego repo dopuszcza dokladnie te hosty, ktorych uzywaja
+// bloki, a kod key-servera (w submodule) potrafi je przyjac. Test kodu samego w
+// sobie mieszka w submodule; ten pilnuje styku z konfiguracja wdrozenia.
+// Uruchomienie: node deploy/tests/key-server-hosts.test.js
 //
 // Powod istnienia: bez tej kontroli strona w przegladarce moze uderzyc w key-server
 // przez nazwe rozwiazujaca sie na loopback (DNS rebinding). Druga polowa testu pilnuje,
@@ -9,7 +12,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const KS = path.join(__dirname, '..');
+const KS = path.join(__dirname, '..', '..', 'key-server');
 const src = fs.readFileSync(path.join(KS, 'server.js'), 'utf8');
 
 function zbuduj(envValue, port) {
@@ -44,7 +47,7 @@ sprawdz(domyslna.isHostAllowed('key-server:3040') === false,
   'domyslna lista dopuszcza key-server:3040 — wtedy wpis w compose bylby zbedny');
 
 // --- kod i compose musza wymieniac te same hosty ---
-const compose = fs.readFileSync(path.join(KS, '..', 'deploy', 'docker-compose.yml'), 'utf8');
+const compose = fs.readFileSync(path.join(__dirname, '..', 'docker-compose.yml'), 'utf8');
 const wiersz = compose.split('\n').find((l) => l.includes('KEY_SERVER_ALLOWED_HOSTS'));
 sprawdz(Boolean(wiersz), 'docker-compose.yml nie ustawia KEY_SERVER_ALLOWED_HOSTS');
 if (wiersz) {

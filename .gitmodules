@@ -1,0 +1,7 @@
+# key-server is pinned to a commit, deliberately not to a branch: a security
+# fix lands in build-on-ai/buildonai-key-server first, and this pointer moves
+# only when someone updates it and the tests pass. `submodule update --remote`
+# would quietly follow main and undo that.
+[submodule "key-server"]
+	path = key-server
+	url = https://github.com/build-on-ai/buildonai-key-server.git

@@ -73,9 +73,12 @@ services:
     restart: unless-stopped
 
   key-server:
+    # Built from the submodule's own context: the image comes from the pinned
+    # commit of build-on-ai/buildonai-key-server, not from files this repo keeps
+    # beside it.
     build:
-      context: ..
-      dockerfile: key-server/Dockerfile
+      context: ../key-server
+      dockerfile: Dockerfile
     container_name: cs-key-server
     ports:
       - "${PORT_KEY_SERVER:?run bin/sync-ports first — deploy/.env is missing or stale}:3040"

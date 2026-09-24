@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 
 const {
   RETENTION_SECONDS,
+  setOptionsFor,
   retentionSeconds,
   noteRetentionSeconds,
   taskRetentionSeconds,
@@ -37,4 +38,29 @@ test('states a term for every persisted kind', () => {
 
 test('keeps the table immutable at runtime', () => {
   assert.throws(() => { RETENTION_SECONDS.chat = 1; }, TypeError);
+});
+
+// Argumenty SET wyprowadza jedna funkcja, bo czytaja je dwie sciezki zapisu:
+// zwykla i ta warunkowa pod blokada. Rozjazd tutaj to rozjazd terminow tam.
+test('brak terminu znaczy SET bez opcji, czyli takze zdjecie istniejacego terminu', () => {
+  assert.deepEqual(setOptionsFor(null), {});
+});
+
+test('termin znaczy SET z PX w milisekundach', () => {
+  assert.deepEqual(setOptionsFor(90), { PX: 90000 });
+  assert.deepEqual(setOptionsFor(7 * 24 * 3600), { PX: 604800000 });
+});
+
+test('kazdy termin z tabeli daje argumenty, ktore znaczy dokladnie ten termin', () => {
+  const { RETENTION_SECONDS } = require('../retention');
+
+  for (const [rodzaj, termin] of Object.entries(RETENTION_SECONDS)) {
+    const opcje = setOptionsFor(termin);
+
+    if (termin === null) {
+      assert.deepEqual(opcje, {}, `${rodzaj}: brak terminu to SET bez opcji`);
+    } else {
+      assert.deepEqual(opcje, { PX: termin * 1000 }, `${rodzaj}: termin w milisekundach`);
+    }
+  }
 });

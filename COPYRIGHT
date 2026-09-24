@@ -34,3 +34,19 @@ consciousness-server is available under two licenses:
      See LICENSE-COMMERCIAL.md for details.
 
 Contact: https://github.com/build-on-ai/consciousness-server
+
+---
+
+THIRD-PARTY FILES
+
+Not everything shipped here is ours, and what is not is not AGPL.
+
+  core/a2a/schema/a2a-0.2.6.json
+     The A2A protocol schema, copied unmodified from the v0.2.6 tag of the A2A
+     project and redistributed under the Apache License 2.0. The licence text
+     travels with it in core/a2a/schema/LICENSE, and its origin, version and
+     checksum are recorded in core/a2a/schema/SOURCE.md. The A2A project
+     publishes no NOTICE file for this version, so none is reproduced.
+
+The AGPLv3 terms above, and the commercial option, cover this project's own
+code. They do not apply to the file named here.

@@ -1,8 +1,9 @@
 # Signed requests — operator guide
 
-Every request to every block must carry a valid ed25519 signature. There is
-no mode that skips verification: `bin/bootstrap-keys` mints a key for each
-identity, and a caller without one is refused.
+Every request to every block must carry a valid ed25519 signature, apart from the
+few endpoints listed below. There is no mode that skips verification:
+`bin/bootstrap-keys` mints a key for each identity, and a caller without one is
+refused.
 
 Protocol reference (header format, canonical string, nonce and timestamp
 rules): [`SIGNING-PROTOCOL.md`](SIGNING-PROTOCOL.md). This document is the
@@ -15,6 +16,9 @@ The middleware never gates these, regardless of mode:
 
 - `GET /health` — Docker healthchecks, monitoring probes
 - `GET /metrics` — Prometheus scraping (future)
+- `GET` and `HEAD /.well-known/agent.json`: the agent card, which a client reads
+  before it has any identity. Reading only: every other method on that path is
+  gated like anything else.
 - HTTP `OPTIONS` preflight — CORS from browsers (cannot be signed)
 - WebSocket upgrade handshake on consciousness-server — the shared
   middleware always passes upgrade requests through
@@ -148,9 +152,13 @@ curl -s http://127.0.0.1:13040/api/agents/identity/<AGENT> | jq
 
 ## What the signature does NOT do
 
-- Does not authorize — an authenticated agent is allowed to call
-  every endpoint. Per-endpoint authorization (ACL / RBAC) is out
-  of scope for this revision.
+- Does not authorize by itself. It settles who is calling, and each
+  route decides what that identity may do. Most routes ask nothing
+  further, so a signed agent reaches them. The A2A routes do ask: a
+  message is filed under the signature rather than under a name in the
+  body, a mailbox is readable and acknowledgeable only by the agent it
+  belongs to, and a task only by the two agents party to it. There is
+  no general ACL or RBAC in this revision.
 - Does not encrypt transport — LAN / VPN assumption. Full TLS is
   out of scope for this revision.
 - Signs exactly one block-to-block call so far: consciousness-server →

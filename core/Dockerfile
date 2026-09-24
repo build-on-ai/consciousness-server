@@ -8,7 +8,8 @@ COPY core/package.json core/package-lock.json ./
 RUN npm ci --omit=dev
 
 COPY core/server.js ./
-COPY core/note-embedding-outbox.js core/chat-archive.js core/inbox-document.js core/services-registry.js core/retention.js ./
+COPY core/note-embedding-outbox.js core/chat-archive.js core/inbox-document.js core/services-registry.js core/retention.js core/route-index.js ./
+COPY core/a2a ./a2a
 COPY core/db ./db
 COPY lib/ports.js lib/sign-outbound.js lib/verify-signed.js ./middleware/
 COPY core/generated ./generated

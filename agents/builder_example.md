@@ -5,18 +5,26 @@ description: >-
   Implements changes end to end: writes the code, writes the test that would
   have caught the bug, and reports what it did not finish.
 version: "1.0.0"
-protocolVersion: "0.2"
+protocolVersion: "0.2.6"
 url: ${CORE_URL}/api/a2a/builder_example
 provider:
   organization: BuildOnAI
   url: https://github.com/build-on-ai
-authentication:
-  schemes: [ed25519-signature]
-  keyId: builder_example
+securitySchemes:
+  ed25519-signed-request:
+    type: apiKey
+    in: header
+    name: X-Signature
+    description: >-
+      Ed25519 signature over the canonical request, sent together with X-Agent-Id,
+      X-Timestamp and X-Nonce. The signing identity is this card's name in upper
+      case; docs/SIGNING-PROTOCOL.md defines the payload that is signed.
+security:
+  - ed25519-signed-request: []
 capabilities:
-  streaming: true
+  streaming: false
   pushNotifications: false
-  stateTransitionHistory: true
+  stateTransitionHistory: false
 defaultInputModes: [text/plain, application/json]
 defaultOutputModes: [text/plain, application/json]
 channels: [tasks, chat, logs]

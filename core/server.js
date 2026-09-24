@@ -23,6 +23,14 @@ const redis = require('redis');
 const http = require('http');
 const { WebSocketServer } = require('ws');
 
+const { loadCards } = require('./a2a/cards');
+const { createStore, NAMESPACE: A2A_NAMESPACE } = require('./a2a/store');
+const { SERVICE_ROLE, serviceCard } = require('./a2a/service-card');
+const { a2aRoutes } = require('./a2a/routes');
+const { identityRoutes } = require('./a2a/identity-routes');
+const { createRedisLock } = require('./a2a/redis-lock');
+const { createRedisBackend } = require('./a2a/redis-backend');
+const { collectRoutes } = require('./route-index');
 const { ownPort, getPort } = require('./middleware/ports');
 const { signHeaders, assertUsable: assertSigningKeyUsable } = require('./middleware/sign-outbound');
 const {
@@ -32,6 +40,7 @@ const {
 } = require('./note-embedding-outbox');
 const {
   retentionSeconds,
+  setOptionsFor,
   noteRetentionSeconds,
   taskRetentionSeconds,
 } = require('./retention');
@@ -53,7 +62,9 @@ const SERVER_VERSION = require('./package.json').version;
 const app = express();
 const PORT = ownPort('consciousness-server', 3032);
 
-const PUBLIC_URL = process.env.PUBLIC_URL || '';
+// The address other agents reach this core at: ports.yaml owns the number, the deployment
+// the host. The container's own PORT is not an address anyone outside it can dial.
+const CORE_URL = (process.env.CORE_URL || `http://127.0.0.1:${getPort('consciousness-server', 3032)}`).replace(/\/$/, '');
 
 const FSM_STATES = ['OFFLINE', 'STARTING', 'IDLE', 'BUSY', 'BLOCKED', 'ERROR'];
 const FSM_LEGACY_MAP = { FREE: 'IDLE' };
@@ -509,12 +520,7 @@ function findBrainstormById(id) {
 
 // Single write path so a term is never chosen at a call site.
 async function persistWithRetention(key, value, ttlSeconds) {
-  const payload = JSON.stringify(value);
-  if (ttlSeconds === null) {
-    await redisClient.set(key, payload);
-    return;
-  }
-  await redisClient.setEx(key, ttlSeconds, payload);
+  await redisClient.set(key, JSON.stringify(value), setOptionsFor(ttlSeconds));
 }
 
 async function saveLog(log) {
@@ -625,7 +631,12 @@ async function loadFromRedis() {
       if (data) brainstorms.push(JSON.parse(data));
     }
 
-    console.log(`📦 Loaded from Redis: ${tasks.length} tasks, ${logs.length} logs, ${agents.length} agents, ${brainstorms.length} brainstorms`);
+    const a2aCount = await a2aStore.hydrate();
+    for (const problem of a2aStore.hydrationProblems()) {
+      console.error(`[A2A] ${problem}`);
+    }
+
+    console.log(`📦 Loaded from Redis: ${tasks.length} tasks, ${logs.length} logs, ${agents.length} agents, ${brainstorms.length} brainstorms, ${a2aCount} a2a messages`);
   } catch (error) {
     console.error('Failed to load from Redis:', error);
   }
@@ -3249,86 +3260,64 @@ app.post("/api/identity/whoami", (req, res) => {
   res.json({ agent_id: session.agent_id, identity: agentIdentities[session.agent_id], session });
 });
 
-let a2aMessages = [];
+// Redis behind the A2A store. The lock waits rather than refusing, because two agents
+// acknowledging the same message at once is ordinary.
+const a2aLock = createRedisLock({ client: redisClient });
 
-app.post("/api/a2a/send", (req, res) => {
-  const { from_agent, to_agent, message_type, payload, priority, requires_ack } = req.body;
-  if (!from_agent || !to_agent || !message_type) return res.status(400).json({ error: "Missing required fields" });
-  const message = { id: require("crypto").randomUUID(), from_agent, to_agent, message_type, payload: payload || {}, priority: priority || "normal", requires_ack: requires_ack || false, status: "pending", created_at: new Date().toISOString() };
-  a2aMessages.push(message);
-  res.json({ success: true, message_id: message.id, status: "queued" });
+// The store's backend: Redis for the data, the lock module for exclusion.
+const a2aStore = createStore({
+  backend: {
+    ...createRedisBackend({
+      client: redisClient,
+      isReady: () => redisReady,
+      namespace: A2A_NAMESPACE,
+      persist: (key, value) => persistWithRetention(key, value, retentionSeconds('a2a')),
+      ttlSeconds: () => retentionSeconds('a2a'),
+    }),
+    acquire: a2aLock.acquire,
+  },
 });
 
-app.get("/api/a2a/inbox/:agent", (req, res) => {
-  const agent = req.params.agent.toUpperCase();
-  let messages = a2aMessages.filter(m => m.to_agent.toUpperCase() === agent && m.status === "pending");
-  messages.forEach(m => { m.status = "delivered"; m.delivered_at = new Date().toISOString(); });
-  res.json({ agent, messages, count: messages.length });
-});
+// The card a role route answers for: a parsed role card, or this service's own card
+// under the name on it.
+function a2aCardFor(role) {
+  if (String(role).toLowerCase() === SERVICE_ROLE) return { kind: 'a2a', card: serviceCard(CORE_URL) };
 
-app.post("/api/a2a/ack/:message_id", (req, res) => {
-  const msg = a2aMessages.find(m => m.id === req.params.message_id);
-  if (!msg) return res.status(404).json({ error: "Message not found" });
-  const { agent } = req.body;
-  if (agent && msg.to_agent.toUpperCase() !== agent.toUpperCase()) return res.status(403).json({ error: "Not authorized" });
-  msg.status = "acked"; msg.acked_at = new Date().toISOString();
-  res.json({ success: true, message_id: msg.id, status: "acked" });
-});
+  const entry = agentCardModel.cards[String(role).toUpperCase()];
+  if (!entry || entry.kind !== 'a2a' || !entry.card) return null;
+  return entry;
+}
 
-app.get("/api/a2a/stats", (req, res) => {
-  res.json({ total_messages: a2aMessages.length, by_status: { pending: a2aMessages.filter(m => m.status === "pending").length, delivered: a2aMessages.filter(m => m.status === "delivered").length, acked: a2aMessages.filter(m => m.status === "acked").length } });
-});
-
-
+app.use(a2aRoutes({ store: a2aStore, cardFor: a2aCardFor }));
 
 const AGENTS_DIR = process.env.AGENTS_DIR || path.join(ECOSYSTEM_ROOT, "agents");
 const SKILLS_DIR = process.env.SKILLS_DIR || path.join(ECOSYSTEM_ROOT, "skills");
 
 const RESOURCE_NAME_RE = /^[a-zA-Z0-9_-]+$/;
 
+// The parsed role model. Raw text is kept alongside it because the registry serves the
+// file as written; anything reading a field uses the model.
+let agentCardModel = { cards: {}, problems: [], counts: { a2a: 0, legacy: 0 } };
+
 function loadAgentsFromDir() {
-  const configs = {};
   try {
-    const files = fs.readdirSync(AGENTS_DIR)
-      .filter(f => f.endsWith(".md") && f.toUpperCase() !== "README.MD");
-    for (const file of files) {
-      try {
-        const agent = path.basename(file, ".md").toUpperCase();
-        const claude_md = fs.readFileSync(path.join(AGENTS_DIR, file), "utf8");
-        if (claude_md.trim().length > 0) {
-          configs[agent] = claude_md;
-        }
-      } catch (e) {
-        console.error(`Error loading agent ${file}:`, e.message);
-      }
+    agentCardModel = loadCards(AGENTS_DIR, { baseUrl: CORE_URL });
+    console.log(`Loaded ${agentCardModel.counts.a2a} agent cards and ${agentCardModel.counts.legacy} role prompts from ${AGENTS_DIR}`);
+    for (const problem of agentCardModel.problems) {
+      console.warn(`[CARDS] ${problem.kind}: ${problem.detail}`);
     }
-    console.log(`Loaded ${Object.keys(configs).length} agents from ${AGENTS_DIR}`);
   } catch (e) {
+    // An unreadable directory is not a system with no roles, so the registry refuses
+    // instead of answering with an empty list.
+    agentCardModel = { cards: {}, problems: [], counts: { a2a: 0, legacy: 0 }, error: e.message };
     console.error("Error reading agents directory:", e.message);
   }
-  return configs;
+  return agentCardModel;
 }
 
-let claudeMdConfigs = loadAgentsFromDir();
+loadAgentsFromDir();
 
-app.get("/api/identity/claude-md", (req, res) => {
-  claudeMdConfigs = loadAgentsFromDir();
-  res.json({ agents: Object.keys(claudeMdConfigs), total: Object.keys(claudeMdConfigs).length });
-});
-
-app.get("/api/identity/claude-md/:agent", (req, res) => {
-  const agent = req.params.agent.toUpperCase();
-  const config = claudeMdConfigs[agent];
-  if (!config) {
-    claudeMdConfigs = loadAgentsFromDir();
-    const reloaded = claudeMdConfigs[agent];
-    if (!reloaded) {
-      return res.status(404).json({ error: "Agent not found", available: Object.keys(claudeMdConfigs) });
-    }
-    return res.json({ agent, claude_md: reloaded, updated_at: new Date().toISOString() });
-  }
-  res.json({ agent, claude_md: config, updated_at: new Date().toISOString() });
-});
+app.use(identityRoutes({ reload: loadAgentsFromDir }));
 
 
 app.get("/api/skills", (req, res) => {
@@ -3353,50 +3342,15 @@ app.get("/api/skills/:name", (req, res) => {
   res.json({ name, content: fs.readFileSync(filePath, "utf8") });
 });
 
+// Discovery. The card is built from the things that own its fields, and the address on
+// it is a route this core answers.
 app.get("/.well-known/agent.json", (req, res) => {
-  res.json({
-    name: "Ecosystem Agent Network",
-    description: "Multi-agent AI development system",
-    ...(PUBLIC_URL ? { url: PUBLIC_URL } : {}),
-    version: "1.0.0",
-    capabilities: ["task-management", "chat", "notes", "a2a-protocol"],
-    agents: Object.keys(claudeMdConfigs),
-    endpoints: { health: "/health", agents: "/api/identity/agents", tasks: "/api/tasks", chat: "/api/chat" }
-  });
+  res.json(serviceCard(CORE_URL));
 });
 
 
-app.get("/api/identity/card/:agent", (req, res) => {
-  const agentId = req.params.agent.toUpperCase();
-  const identity = agentIdentities[agentId] || {};
-  const claudeMd = claudeMdConfigs[agentId] || "";
-  
-  res.json({
-    name: agentId,
-    description: identity.description || identity.role || "AI Agent",
-    identifier: agentId,
-    version: "1.0.0",
-    capabilities: identity.capabilities || [],
-    role: identity.role || "worker",
-    machine: identity.machine_id || "unknown",
-    status: identity.last_login ? "registered" : "unregistered",
-    endpoints: { chat: "/api/chat", tasks: "/api/tasks", a2a: "/api/a2a/send" },
-    claude_md_preview: claudeMd.substring(0, 200),
-    registered_at: identity.created_at || null,
-    last_seen: identity.last_login || null
-  });
-});
-
-app.put("/api/identity/card/:agent", (req, res) => {
-  const agentId = req.params.agent.toUpperCase();
-  const { description, capabilities } = req.body;
-  if (agentIdentities[agentId]) {
-    if (description) agentIdentities[agentId].description = description;
-    if (capabilities) agentIdentities[agentId].capabilities = capabilities;
-  }
-  res.json({ success: true, agent: agentId });
-});
-
+// The ephemeral identity an agent posted at login: who is running where, not what a
+// role is. A role's own fields come from its card, under /api/identity/card/:agent.
 app.get("/api/identity/:agent_id", (req, res) => {
   const agent_id = req.params.agent_id;
   const identity = agentIdentities[agent_id];
@@ -3521,30 +3475,10 @@ app.get("/api/graph/export.csv", (req, res) => {
   res.send(csv);
 });
 
+// The registry of what this server answers. It walks Express, including routes
+// mounted through routers, so bin/test-endpoints sees the whole surface.
 app.get("/api/_routes", (req, res) => {
-  const stack = (app._router && app._router.stack) || [];
-  const byPath = new Map();
-
-  for (const layer of stack) {
-    if (!layer.route || !layer.route.path) continue;
-    const paths = Array.isArray(layer.route.path) ? layer.route.path : [layer.route.path];
-    const methods = Object.keys(layer.route.methods || {})
-      .filter(m => layer.route.methods[m])
-      .map(m => m.toUpperCase());
-
-    for (const p of paths) {
-      if (!byPath.has(p)) byPath.set(p, new Set());
-      methods.forEach(m => byPath.get(p).add(m));
-    }
-  }
-
-  const routes = Array.from(byPath.entries())
-    .map(([path, methods]) => ({
-      path,
-      methods: Array.from(methods).sort(),
-      parameterised: path.includes(':')
-    }))
-    .sort((a, b) => a.path.localeCompare(b.path));
+  const routes = collectRoutes(app);
 
   res.json({
     service: 'consciousness-server',

@@ -1,14 +1,12 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-only
-// Sprawdza, ze compose tego repo dopuszcza dokladnie te hosty, ktorych uzywaja
-// bloki, a kod key-servera (w submodule) potrafi je przyjac. Test kodu samego w
-// sobie mieszka w submodule; ten pilnuje styku z konfiguracja wdrozenia.
+// Compose ma dopuszczac dokladnie te hosty, ktorych uzywaja bloki, a key-server ma je
+// przyjmowac. Bez tego strona w przegladarce siega po loopback przez DNS rebinding.
+
 // Uruchomienie: node deploy/tests/key-server-hosts.test.js
-//
-// Powod istnienia: bez tej kontroli strona w przegladarce moze uderzyc w key-server
-// przez nazwe rozwiazujaca sie na loopback (DNS rebinding). Druga polowa testu pilnuje,
-// zeby lista w kodzie i w docker-compose.yml nie rozjechaly sie po cichu: domyslna lista
-// NIE zawiera key-server:3040, wiec sama zmiana w kodzie odcielaby uslugi w sieci Dockera.
+
+// Domyslna lista w kodzie NIE zawiera key-server:3040, wiec zmiana wylacznie w kodzie
+// odcielaby uslugi w sieci Dockera — druga polowa pilnuje zgodnosci z compose.
 const fs = require('fs');
 const path = require('path');
 
@@ -54,9 +52,8 @@ if (wiersz) {
   for (const host of ['key-server:3040', '127.0.0.1:3040', '[::1]:3040']) {
     sprawdz(wiersz.includes(host), `compose nie dopuszcza: ${host}`);
   }
-  // Port hosta jest podstawiany ze zmiennej, a jej zapis zmienia sie razem z
-  // polityka fallbackow w compose. Sprawdzamy, ze wiersz w ogole siega po ta
-  // zmienna, nie jak dokladnie ja zapisano.
+  // Zapis zmiennej zmienia sie razem z polityka fallbackow w compose, wiec sprawdzamy,
+  // ze wiersz w ogole po nia siega, a nie jak dokladnie ja zapisano.
   sprawdz(wiersz.includes('${PORT_KEY_SERVER'),
     'compose nie dopuszcza portu hosta key-servera');
 }

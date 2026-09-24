@@ -29,6 +29,29 @@ Four headers on every signed request:
 | `X-Nonce` | 32 hex chars of random | Anti-replay (unique per request) |
 | `X-Signature` | base64 of 64-byte ed25519 signature | Proof of identity |
 
+## Agent names
+
+One name, spelled one way. A role lives in `agents/<name>.md`, the A2A card inside
+it is called `<name>`, and the identity that signs for it is **that name in upper
+case**: `auditor_example.md` holds the card `auditor_example` and signs as
+`AUDITOR_EXAMPLE`.
+
+That is the whole rule, and everything downstream follows it: `bin/bootstrap-keys`
+mints `AUDITOR_EXAMPLE`, the key-server looks up `keys/agents/AUDITOR_EXAMPLE.pub`
+by exact match, and `X-Agent-Id` carries `AUDITOR_EXAMPLE`. A card whose `name`
+does not match its filename is refused rather than loaded, because the key is
+minted from the filename while the route and the identity come from the name. If
+those two may differ, a card can point at a key that was never created.
+
+Two names that differ only in case are one identity to this rule and two files on
+a case-sensitive filesystem, so they are refused as a collision instead of being
+resolved by whichever is read last.
+
+Cards state the scheme in the form the A2A schema allows: an `apiKey` scheme
+named `X-Signature`, with the other three headers named in its description and a
+pointer back to this document. A client that reads the card learns what to send;
+it still has to implement ed25519 signing to send it.
+
 ## Canonical message
 
 Agent, block, and key-server must all reconstruct the **same bytes**

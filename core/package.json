@@ -1,6 +1,6 @@
 {
   "name": "consciousness-server",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Consciousness Server - Central awareness point for agent ecosystems",
   "main": "server.js",
   "scripts": {
@@ -15,8 +15,10 @@
   ],
   "license": "AGPL-3.0-only",
   "dependencies": {
+    "ajv": "^8.20.0",
     "cors": "^2.8.5",
     "express": "^4.18.2",
+    "js-yaml": "^5.4.2",
     "redis": "^5.10.0",
     "sshpk": "^1.18.0",
     "uuid": "^9.0.0",

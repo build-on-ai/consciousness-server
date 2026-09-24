@@ -58,6 +58,7 @@ services:
       AGENTS_DIR: /data/agents
       SKILLS_DIR: /data/skills
       SERVICES_RESOLVED: /data/services.resolved.json
+      CORE_URL: ${CORE_URL:-http://127.0.0.1:${PORT_CONSCIOUSNESS_SERVER:?run bin/sync-ports first — deploy/.env is missing or stale}}
       SEMANTIC_SEARCH_URL: http://host.docker.internal:${PORT_SEMANTIC_SEARCH:?run bin/sync-ports first — deploy/.env is missing or stale}
       HOME: /tmp
       KEY_SERVER_URL: ${KEY_SERVER_URL:-http://key-server:3040}

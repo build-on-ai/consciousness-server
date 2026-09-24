@@ -22,9 +22,12 @@ that turns verification off.
 `ports.yaml` assigns ports and nothing restates them: `services.json` names the
 key to look up, and `bin/sync-ports` resolves the two into
 `deploy/services.resolved.json`, which is what the blocks read.
-`agents/*.md` are A2A role cards and `skills/*.md` skill definitions; the core
-loads both at startup. Both ship as `_example` / `-example` files: they are
-working defaults meant to be replaced with your own.
+`agents/*.md` are role files and `skills/*.md` skill definitions. Seven of the
+role files are A2A agent cards: they carry the front matter the protocol
+defines, and the core parses it at startup; the rest are plain role prompts,
+which the core serves as text and nothing more. `skills/*.md` are listed from
+disk when asked for, not loaded at startup. All of them ship as `_example` /
+`-example` files: working defaults meant to be replaced with your own.
 
 ## Requirements
 
@@ -153,7 +156,7 @@ cs-test-runner       Up About a minute (healthy)
 ```console
 ~/cs/deploy$ curl -s http://localhost:13032/health
 
-{"status":"ok","uptime":125,"version":"1.2.0","counts_complete":true,
+{"status":"ok","uptime":125,"version":"1.3.0","counts_complete":true,
  "semantic_search":"ok","redis":"ok","redis_down_seconds":0, ...}
 ```
 
@@ -193,6 +196,14 @@ sync-ports: wrote 8 PORT_* lines to /path/to/checkout/deploy/.env
 ```
 
 Container-internal ports do not change — only the host-side mapping does.
+
+**Different ports do not make a second stack.** `deploy/docker-compose.yml` fixes
+`name: cs-ecosystem` and a `container_name` for every service, and those names are
+global to the Docker daemon. A second checkout brought up on another port palette
+therefore takes over the first one's containers instead of running beside them:
+same names, same daemon, one set of containers. Until the names are parameterised,
+run **one installation per machine**, and stop the running stack before bringing
+another checkout up.
 
 ## Signed requests
 
@@ -234,6 +245,131 @@ The wire format and the replay window are in
 [docs/SIGNING-PROTOCOL.md](docs/SIGNING-PROTOCOL.md); verification modes in
 [docs/SIGNED-REQUESTS.md](docs/SIGNED-REQUESTS.md); adding an identity in
 [key-server/keys/agents/README.md](key-server/keys/agents/README.md).
+
+## A2A
+
+The role cards follow the [A2A specification v0.2.6](https://github.com/a2aproject/A2A/tree/v0.2.6).
+Its JSON Schema is vendored at `core/a2a/schema/a2a-0.2.6.json` and validates the
+cards and the parameters of every call.
+
+### Discovery
+
+The card of the service itself is readable without a signature, because that is
+what a client reads before it has one. Reading only: anything else on that path
+is refused at the gate.
+
+```console
+$ curl -s http://localhost:13032/.well-known/agent.json | head -c 200
+{"name":"consciousness-server","description":"Consciousness Server - Central awareness point for agent ecosystems","version":"1.3.0","protocolVersion":"0.2.6","url":"http://127.0.0.1:13032/api/a2a/consciousness-server"
+
+$ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:13032/.well-known/agent.json
+401
+```
+
+Its `version` is `core/package.json`'s, and its `url` is a route the core answers.
+Each role card carries its own `url` in the same shape, `…/api/a2a/<role>`; the
+address is built from `CORE_URL`, which Compose fills from the port in
+`ports.yaml`.
+
+### Calling a role
+
+Signed, JSON-RPC 2.0, at the address on the card:
+
+```console
+$ bin/cs-curl -a BUILDER_EXAMPLE POST /api/a2a/auditor_example \
+    '{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":
+      {"kind":"message","messageId":"m-1","role":"user",
+       "parts":[{"kind":"text","text":"check the contract"}]}}}'
+{"jsonrpc":"2.0","id":1,"result":{"kind":"task","id":"…","contextId":"…",
+ "status":{"state":"submitted","timestamp":"…"},"history":[…]}}
+```
+
+**Implemented:** `message/send`, `tasks/get`.
+
+**Not implemented**, and answered as such rather than with silence or a 404:
+`message/stream`, `tasks/resubscribe` and `tasks/cancel` get `-32004`, and the
+push notification configuration methods get `-32003`, because the card says push
+notifications are unavailable rather than that the call is unknown. A name the
+protocol does not define at all gets `-32601`. The cards say `streaming: false`
+because of this: a card here does not claim a capability the core does not have.
+
+The WebSocket bus is not A2A streaming. It is this project's own channel with its
+own messages, and no A2A client can consume it.
+
+### What is durable, and what happens when it is not
+
+A message is written to Redis before the sender is told anything. If the store
+cannot be written, the call is refused with 503; it is never reported as queued.
+State changes are named transitions with an author and a time, kept as history.
+That history stays in the store: no route returns it, which is why the cards say
+`stateTransitionHistory: false`.
+The allowed ones are `pending → delivered`, `delivered → acked` and
+`pending → acked`, the last for an addressee told over the bus that never called
+the inbox. Nothing follows `acked`, and acknowledging twice returns the first
+answer rather than a fresh timestamp.
+
+### When Redis goes away
+
+A write that changes state is never abandoned on a timer. A time limit cannot
+cancel a command already on its way, so giving up on one would let the store and
+the answer disagree: the caller told it failed, the change arriving anyway, and a
+restart loading it back.
+
+The write is awaited. If it reports an error, the key decides what happened:
+
+| What the check finds | Answer |
+|---|---|
+| the new value (the write arrived, the answer was lost) | success |
+| the old value (the write did not arrive) | `503`, `outcome: not-written` |
+| some other value, or no key where a record stood | `503`, `outcome: unknown` |
+| nothing readable (the check failed too) | `503`, `outcome: unknown` |
+
+`outcome: unknown` means what it says: this core does not know whether the write
+landed. Where the check did read something, the store wins and that record
+replaces what this process held, or is dropped if the key is gone. Where the
+check itself failed there is nothing to replace it with, so memory stays as it
+was and the next hydration settles it.
+
+A write refused by the lock is not in doubt at all: the check that it still held
+the lock and the write itself are one command, so it answers `not-written`
+without reading anything back.
+
+Reads are bounded, because giving up on a read changes nothing.
+
+### Who may do what
+
+The identity is the signature, never a field in the body. A body may name its
+sender and is allowed to agree; disagreeing is refused with 403 and nothing is
+stored. Only the addressee may read a mailbox or acknowledge a message. A task is
+readable by the two agents party to it, and reported as not found to anyone else.
+
+A client that reads a card learns exactly what to send: an `apiKey` scheme on
+`X-Signature`, with the other three headers named in its description. It still has
+to implement ed25519 signing as `docs/SIGNING-PROTOCOL.md` defines it, so reading
+these cards is interoperable and calling them is not.
+
+### The older mailbox routes
+
+`POST /api/a2a/send`, `GET`/`POST /api/a2a/inbox/:agent`, `POST
+/api/a2a/ack/:id` and `GET /api/a2a/stats` are this project's own mailbox, not
+A2A, and they keep working. They share the durable store and take the sender from
+the same signature, but a mailbox is not a task: a task is readable by both agents
+party to it, while a mailbox is readable only by the agent it belongs to. The
+sender of a message cannot look inside the box they posted it to. `GET` on an
+inbox reads and changes nothing; `POST` on it accepts delivery. What changed
+about them is in the
+[v1.3.0 release notes](https://github.com/build-on-ai/consciousness-server/releases/tag/v1.3.0).
+
+### Known limits of the mailbox
+
+Two things it does not do, named here because the wire shape suggests otherwise:
+
+- **`requires_ack` is recorded, not enforced.** It is stored with the message and
+  returned on reads, and nothing acts on it: there is no redelivery, no reminder
+  and no different treatment for a message that sets it.
+- **An unknown addressee is accepted.** `to_agent` is taken as given, so a message
+  to a name that no agent answers to is stored and reported as queued. It waits in
+  a mailbox nobody reads. Check the addressee before sending if that matters.
 
 ## Adding a service
 
@@ -292,7 +428,7 @@ $ bin/test-endpoints
   GET     /api/git/history                     401          200          OK
   POST    /api/git/hook/post-commit            401          -            OK
 
-  tras sprawdzonych: 105    OK: 105    do obejrzenia: 0
+  tras sprawdzonych: 106    OK: 106    do obejrzenia: 0
 ```
 
 `401` without a signature is the expected result — that column proves the gate
@@ -307,8 +443,7 @@ another one; a route that stays rate-limited is reported, never counted as passe
 
 ```console
 $ (cd core && npm ci && npm test)
-# tests 30
-# pass 30
+…
 # fail 0
 
 $ (cd key-server && npm ci && REDIS_PORT=$(../lib/ports.py redis) npm test)
@@ -347,7 +482,7 @@ $ (cd tui && ./boa)
 
 The panel signs every request, reads included, so it will not start without a
 key. With no `--key` it looks for the identity named by `--as` (default `TUI`)
-in `deploy/keys/`, which is where step 1 minted it, and then in
+in `deploy/keys/`, which is where step 2 minted it, and then in
 `~/.ssh/ecosystem-<NAME>`. Point it somewhere else explicitly when you need to:
 
 ```console

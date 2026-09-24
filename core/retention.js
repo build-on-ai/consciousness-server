@@ -9,6 +9,7 @@ const RETENTION_SECONDS = Object.freeze({
   brainstorm: null,
   chat: 30 * DAY_SECONDS,
   conversation: 90 * DAY_SECONDS,
+  a2a: null,
   'inbox.result': null,
   log: 7 * DAY_SECONDS,
   note: null,
@@ -41,7 +42,14 @@ function taskRetentionSeconds(task) {
   return retentionSeconds(finished ? 'task.finished' : 'task');
 }
 
+// How a term becomes arguments to SET. Both the ordinary write and the conditional
+// one under a lock read it here, so they cannot drift apart.
+function setOptionsFor(ttlSeconds) {
+  return ttlSeconds === null ? {} : { PX: ttlSeconds * 1000 };
+}
+
 module.exports = {
+  setOptionsFor,
   RETENTION_SECONDS,
   TELEMETRY_AGENTS,
   retentionSeconds,

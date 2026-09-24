@@ -1,0 +1,5 @@
+# The A2A schema is vendored byte-for-byte and its checksum is what proves the copy
+# is genuine (core/a2a/schema/SOURCE.md). The trailing blank line it ends with is
+# upstream's; normalising it here would silence a whitespace warning by breaking the
+# thing that makes the file trustworthy.
+core/a2a/schema/a2a-0.2.6.json -whitespace

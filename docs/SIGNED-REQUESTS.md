@@ -74,7 +74,8 @@ about the gap.
 | `bin/chat-agent`, `bin/status-collector` | **YES** | each signs through a `bin/sign-request` subprocess |
 | Cortex agent → CS API | **YES, after the parallel change in the cortex repo** | same env contract: `CS_SIGNING_KEY` = path to the agent's OpenSSH ed25519 key. Until that lands, its traffic gets 401 |
 | WebSocket clients → `ws://…:13032/<agent>` | **NO** — WS has no auth in v1 (see "Known limitation" above) | keep 13032 on loopback / VPN |
-| MCP servers calling CS | **NO** | trusted-network assumption for now |
+| `clients/mcp-buildonai` → CS API | **YES** | `lib/sign-outbound.js`, copied into `clients/mcp-buildonai/middleware/`; requires `CS_AGENT_ID` when `CS_SIGNING_KEY` is set |
+| Other MCP servers calling CS | **NO** | trusted-network assumption for now |
 | Skills that shell out to plain curl | **NO** | wrap them with `bin/sign-request` |
 
 Everything in the **NO** rows gets a 401. There is no mode that lets them

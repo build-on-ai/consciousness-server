@@ -17,7 +17,7 @@ that turns verification off.
 | `git-workflow/` | Python | Records commits reported by a post-commit hook. |
 | `memory-server/` | Node.js | Document ingest into PostgreSQL with pgvector. Opt-in. |
 | `tui/` | Go | Terminal interface over the API. |
-| `clients/mcp-buildonai/` | TypeScript | MCP client. |
+| `clients/mcp-buildonai/` | TypeScript | MCP client. [v1.3.1 release notes](https://github.com/build-on-ai/consciousness-server/releases/tag/v1.3.1) |
 
 `ports.yaml` assigns ports and nothing restates them: `services.json` names the
 key to look up, and `bin/sync-ports` resolves the two into
@@ -156,7 +156,7 @@ cs-test-runner       Up About a minute (healthy)
 ```console
 ~/cs/deploy$ curl -s http://localhost:13032/health
 
-{"status":"ok","uptime":125,"version":"1.3.0","counts_complete":true,
+{"status":"ok","uptime":125,"version":"1.3.1","counts_complete":true,
  "semantic_search":"ok","redis":"ok","redis_down_seconds":0, ...}
 ```
 
@@ -260,7 +260,7 @@ is refused at the gate.
 
 ```console
 $ curl -s http://localhost:13032/.well-known/agent.json | head -c 200
-{"name":"consciousness-server","description":"Consciousness Server - Central awareness point for agent ecosystems","version":"1.3.0","protocolVersion":"0.2.6","url":"http://127.0.0.1:13032/api/a2a/consciousness-server"
+{"name":"consciousness-server","description":"Consciousness Server - Central awareness point for agent ecosystems","version":"1.3.1","protocolVersion":"0.2.6","url":"http://127.0.0.1:13032/api/a2a/consciousness-server"
 
 $ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:13032/.well-known/agent.json
 401

@@ -77,3 +77,32 @@ jobs:
           fi
           mv /tmp/env.bak deploy/.env
           (cd deploy && docker compose config >/dev/null)
+
+  mcp-client:
+    name: MCP client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Typecheck and signing test
+        working-directory: clients/mcp-buildonai
+        run: |
+          npm ci --no-audit --no-fund
+          npm run typecheck
+          npm test
+
+      - name: Starts with an OpenSSH ed25519 key, refuses without CS_AGENT_ID
+        working-directory: clients/mcp-buildonai
+        run: |
+          key="$RUNNER_TEMP/mcp-key"
+          ssh-keygen -t ed25519 -N "" -C CI -f "$key" -q
+          export CONSCIOUSNESS_URL=http://127.0.0.1:9 CS_SIGNING_KEY="$key"
+          CS_AGENT_ID=CI npx tsx mcp-server.ts </dev/null 2>&1 | tee "$RUNNER_TEMP/mcp-start.log"
+          grep -q "podpisuje jako CI" "$RUNNER_TEMP/mcp-start.log"
+          if env -u CS_AGENT_ID npx tsx mcp-server.ts </dev/null; then
+            echo "client started with a key and no CS_AGENT_ID" >&2
+            exit 1
+          fi

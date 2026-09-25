@@ -11,7 +11,9 @@
     "agents": "npx tsx servers/consciousness/getAgents.ts",
     "notes": "npx tsx servers/consciousness/getNotes.ts",
     "chat": "npx tsx servers/consciousness/sendChat.ts",
-    "search": "npx tsx servers/semantic/search.ts"
+    "search": "npx tsx servers/semantic/search.ts",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
